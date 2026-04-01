@@ -97,6 +97,10 @@ module MyAccount
         user_claims&.dig(:platform_admin) == true
       end
 
+      def platform_admin_root?
+        user_claims&.dig(:platform_admin_root) == true
+      end
+
       # --- Scopes ---
 
       def scopes

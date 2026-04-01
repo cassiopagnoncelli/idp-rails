@@ -24,6 +24,7 @@ RSpec.describe MyAccount::JWT::Verifier do
         email: "alice@example.com",
         name: "Alice",
         platform_admin: false,
+        platform_admin_root: false,
         mfa_verified: true
       },
       scopes: [ "read", "write" ]

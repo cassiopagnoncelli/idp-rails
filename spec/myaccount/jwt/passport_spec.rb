@@ -18,6 +18,7 @@ RSpec.describe MyAccount::JWT::Passport do
         email: "alice@example.com",
         name: "Alice",
         platform_admin: false,
+        platform_admin_root: false,
         mfa_verified: true
       },
       scopes: [ "read", "write", "admin", "api_keys" ]
@@ -96,6 +97,10 @@ RSpec.describe MyAccount::JWT::Passport do
 
     it "exposes platform_admin?" do
       expect(passport.platform_admin?).to be false
+    end
+
+    it "exposes platform_admin_root?" do
+      expect(passport.platform_admin_root?).to be false
     end
   end
 

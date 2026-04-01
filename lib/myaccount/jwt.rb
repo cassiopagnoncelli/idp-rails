@@ -11,6 +11,7 @@ require_relative "jwt/jwks_client"
 require_relative "jwt/passport"
 require_relative "jwt/verifier"
 require_relative "jwt/revocation_subscriber"
+require_relative "jwt/user_agent"
 
 module MyAccount
   module JWT
