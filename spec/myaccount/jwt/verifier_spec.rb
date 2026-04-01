@@ -4,7 +4,7 @@ RSpec.describe MyAccount::JWT::Verifier do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
-    { keys: [key_pair.jwk] }.to_json
+    { keys: [ key_pair.jwk ] }.to_json
   end
 
   let(:valid_payload) do
@@ -26,7 +26,7 @@ RSpec.describe MyAccount::JWT::Verifier do
         platform_admin: false,
         mfa_verified: true
       },
-      scopes: ["read", "write"]
+      scopes: [ "read", "write" ]
     }
   end
 
@@ -92,7 +92,7 @@ RSpec.describe MyAccount::JWT::Verifier do
   describe "account type filtering" do
     before do
       MyAccount::JWT.configure do |c|
-        c.accepted_account_types = ["Merchant"]
+        c.accepted_account_types = [ "Merchant" ]
       end
     end
 

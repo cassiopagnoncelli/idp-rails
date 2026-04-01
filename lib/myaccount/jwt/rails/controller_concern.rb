@@ -83,9 +83,9 @@ module MyAccount
 
         def extract_bearer_token
           header = request.headers["Authorization"]
-          return unless header&.start_with?("Bearer ")
+          return unless header&.match?(/\ABearer\s/i)
 
-          header.split(" ", 2).last.presence
+          header.sub(/\ABearer\s+/i, "").presence
         end
 
         def render_auth_error(message, status: :unauthorized)

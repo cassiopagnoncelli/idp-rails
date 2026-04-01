@@ -20,7 +20,7 @@ RSpec.describe MyAccount::JWT::Passport do
         platform_admin: false,
         mfa_verified: true
       },
-      scopes: ["read", "write", "admin", "api_keys"]
+      scopes: [ "read", "write", "admin", "api_keys" ]
     }
   end
 
@@ -101,7 +101,7 @@ RSpec.describe MyAccount::JWT::Passport do
 
   describe "scopes" do
     it "returns scopes array" do
-      expect(passport.scopes).to eq(["read", "write", "admin", "api_keys"])
+      expect(passport.scopes).to eq([ "read", "write", "admin", "api_keys" ])
     end
 
     it "checks scope presence" do

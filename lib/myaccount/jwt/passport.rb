@@ -54,6 +54,10 @@ module MyAccount
         account_context&.dig(:type)
       end
 
+      def account_id
+        account_context&.dig(:id)
+      end
+
       def account_uuid
         account_context&.dig(:uuid)
       end
@@ -68,6 +72,11 @@ module MyAccount
 
       def account_selected?
         !account_context.nil?
+      end
+
+      # Convenience: checks if the user's role in the current account is "admin" or "owner".
+      def admin?
+        %w[admin owner].include?(role)
       end
 
       # --- User profile ---
@@ -102,7 +111,12 @@ module MyAccount
 
       def expired?
         return true unless expires_at
-        Time.now > expires_at
+        Time.now.utc > expires_at
+      end
+
+      # Flipper integration — allows using the passport as a feature flag actor.
+      def flipper_id
+        "Passport:#{user_uuid}"
       end
 
       def to_h

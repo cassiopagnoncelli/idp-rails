@@ -3,7 +3,7 @@
 Gem::Specification.new do |spec|
   spec.name          = "myaccount-jwt"
   spec.version       = "0.1.0"
-  spec.authors       = ["MyAccount Team"]
+  spec.authors       = [ "MyAccount Team" ]
   spec.summary       = "JWT verification client for MyAccount identity provider"
   spec.description   = "Shared library for sister apps to verify JWT passports issued by MyAccount. " \
                         "Handles JWKS fetching/caching, ES256 signature verification, claim validation, " \
@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.1"
 
   spec.files = Dir["lib/**/*", "LICENSE", "README.md"]
-  spec.require_paths = ["lib"]
+  spec.require_paths = [ "lib" ]
 
   spec.add_dependency "jwt", "~> 2.9"
 

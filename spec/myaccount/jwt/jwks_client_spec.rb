@@ -4,7 +4,7 @@ RSpec.describe MyAccount::JWT::JwksClient do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
-    { keys: [key_pair.jwk] }.to_json
+    { keys: [ key_pair.jwk ] }.to_json
   end
 
   before do
@@ -34,7 +34,7 @@ RSpec.describe MyAccount::JWT::JwksClient do
 
       # Now a new key appears.
       new_key = TestKeys.generate
-      new_jwks = { keys: [key_pair.jwk, new_key.jwk] }.to_json
+      new_jwks = { keys: [ key_pair.jwk, new_key.jwk ] }.to_json
 
       stub_request(:get, "https://account.test/.well-known/jwks.json")
         .to_return(status: 200, body: new_jwks)
