@@ -4,16 +4,16 @@ module Idp
   module JWT
     module Rails
       class Railtie < ::Rails::Railtie
-        initializer "idp_jwt.configure" do
+        initializer 'idp_jwt.configure' do
           # Auto-configure from Rails credentials or environment variables.
           Idp::JWT.configure do |config|
-            config.jwks_url ||= ENV["IDP_JWKS_URL"]
-            config.issuer   ||= ENV.fetch("IDP_JWT_ISSUER", "https://account.yourcompany.com")
+            config.jwks_url ||= ENV.fetch('IDP_JWKS_URL', nil)
+            config.issuer   ||= ENV.fetch('IDP_JWT_ISSUER', 'https://account.yourcompany.com')
             config.logger     = ::Rails.logger
           end
         end
 
-        initializer "idp_jwt.revocation_subscriber" do
+        initializer 'idp_jwt.revocation_subscriber' do
           # Start the revocation subscriber if Redis is configured.
           if Idp::JWT.configuration.redis
             Idp::JWT.configuration.validate!

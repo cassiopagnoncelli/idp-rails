@@ -26,7 +26,7 @@ module Idp
       def subject
         claims[:sub]
       end
-      alias_method :user_uuid, :subject
+      alias user_uuid subject
 
       def issued_at
         claims[:iat] ? Time.at(claims[:iat]) : nil
@@ -78,6 +78,7 @@ module Idp
 
       def expired?
         return true unless expires_at
+
         Time.now.utc > expires_at
       end
 

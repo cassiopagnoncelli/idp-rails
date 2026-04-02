@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
-require "jwt"
-require "net/http"
-require "json"
-require "openssl"
+require 'jwt'
+require 'net/http'
+require 'json'
+require 'openssl'
 
-require_relative "jwt/version"
-require_relative "jwt/configuration"
-require_relative "jwt/jwks_client"
-require_relative "jwt/passport"
-require_relative "jwt/verifier"
-require_relative "jwt/revocation_subscriber"
-require_relative "jwt/user_agent"
+require_relative 'jwt/version'
+require_relative 'jwt/configuration'
+require_relative 'jwt/jwks_client'
+require_relative 'jwt/passport'
+require_relative 'jwt/verifier'
+require_relative 'jwt/revocation_subscriber'
+require_relative 'jwt/user_agent'
 
 module Idp
   module JWT

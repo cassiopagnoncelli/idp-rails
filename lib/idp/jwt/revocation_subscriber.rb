@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "monitor"
+require 'monitor'
 
 module Idp
   module JWT
@@ -69,7 +69,7 @@ module Idp
         synchronize { @running = false }
         @subscriber_redis&.close
         @thread&.join(5)
-        @config.logger.info("[Idp::JWT] Revocation subscriber stopped")
+        @config.logger.info('[Idp::JWT] Revocation subscriber stopped')
       end
 
       # Check if the subscriber is running.
@@ -97,7 +97,7 @@ module Idp
       private
 
       def subscribe_loop
-        require "redis"
+        require 'redis'
 
         @subscriber_redis = build_redis
         @subscriber_redis.subscribe(@channel) do |on|
@@ -111,13 +111,13 @@ module Idp
           sleep 5
           retry
         end
-      rescue => e
+      rescue StandardError => e
         @config.logger.error("[Idp::JWT] Revocation subscriber error: #{e.message}")
       end
 
       def handle_message(message)
         data = JSON.parse(message)
-        user_uuid = data["sub"]
+        user_uuid = data['sub']
         return unless user_uuid
 
         block!(user_uuid)

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "browser"
+require 'browser'
 
 module Idp
   module JWT
@@ -22,19 +22,24 @@ module Idp
         return nil if user_agent.nil? || user_agent.strip.empty?
 
         b = Browser.new(user_agent)
-        browser_name = b.name unless b.name == "Unknown Browser"
+        browser_name = b.name unless b.name == 'Unknown Browser'
 
-        platform = case
-        when b.platform.ios?       then "iOS"
-        when b.platform.android?   then "Android"
-        when b.platform.mac?       then "macOS"
-        when b.platform.windows?   then "Windows"
-        when b.platform.linux?     then "Linux"
-        when b.platform.chrome_os? then "ChromeOS"
-        end
+        platform = if b.platform.ios?
+                     'iOS'
+                   elsif b.platform.android?
+                     'Android'
+                   elsif b.platform.mac?
+                     'macOS'
+                   elsif b.platform.windows?
+                     'Windows'
+                   elsif b.platform.linux?
+                     'Linux'
+                   elsif b.platform.chrome_os?
+                     'ChromeOS'
+                   end
 
         if b.bot?
-          "Bot"
+          'Bot'
         elsif browser_name && platform
           "#{browser_name} on #{platform}"
         elsif browser_name

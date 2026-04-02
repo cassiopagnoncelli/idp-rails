@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "logger"
+require 'logger'
 
 module Idp
   module JWT
@@ -45,19 +45,19 @@ module Idp
 
       def initialize
         @jwks_url = nil
-        @issuer = "https://account.yourcompany.com"
+        @issuer = 'https://account.yourcompany.com'
         @jwks_cache_ttl = 3600
         @clock_skew = 30
         @redis = nil
-        @revocation_channel = "idp:token_revocations"
+        @revocation_channel = 'idp:token_revocations'
         @http_open_timeout = 5
         @http_read_timeout = 5
         @logger = Logger.new(IO::NULL)
       end
 
       def validate!
-        raise Error, "jwks_url must be configured" unless jwks_url
-        raise Error, "issuer must be configured" unless issuer
+        raise Error, 'jwks_url must be configured' unless jwks_url
+        raise Error, 'issuer must be configured' unless issuer
       end
     end
   end

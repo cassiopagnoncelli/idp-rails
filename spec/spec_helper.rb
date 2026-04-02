@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require "ostruct"
-require "webmock/rspec"
-require "idp-jwt"
+require 'ostruct'
+require 'webmock/rspec'
+require 'idp-jwt'
 
 # Generate a test ES256 key pair for signing tokens in specs.
 module TestKeys
   def self.generate
-    key = OpenSSL::PKey::EC.generate("prime256v1")
-    kid = "test_key_001"
+    key = OpenSSL::PKey::EC.generate('prime256v1')
+    kid = 'test_key_001'
 
     # Build JWKS entry from the key.
     point = key.public_key
@@ -20,11 +20,11 @@ module TestKeys
     y_bytes = uncompressed[1 + coord_len, coord_len]
 
     jwk = {
-      kty: "EC",
-      crv: "P-256",
+      kty: 'EC',
+      crv: 'P-256',
       kid: kid,
-      use: "sig",
-      alg: "ES256",
+      use: 'sig',
+      alg: 'ES256',
       x: Base64.urlsafe_encode64(x_bytes, padding: false),
       y: Base64.urlsafe_encode64(y_bytes, padding: false)
     }
@@ -38,16 +38,16 @@ module TestKeys
   end
 
   def self.sign_token(payload, key_pair)
-    JWT.encode(payload, key_pair.private_key, "ES256", { kid: key_pair.kid })
+    JWT.encode(payload, key_pair.private_key, 'ES256', { kid: key_pair.kid })
   end
 end
 
 RSpec.configure do |config|
-  config.before(:each) do
+  config.before do
     Idp::JWT.reset_configuration!
     Idp::JWT.configure do |c|
-      c.jwks_url = "https://account.test/.well-known/jwks.json"
-      c.issuer = "https://account.test"
+      c.jwks_url = 'https://account.test/.well-known/jwks.json'
+      c.issuer = 'https://account.test'
     end
   end
 end

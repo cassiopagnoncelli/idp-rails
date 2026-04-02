@@ -1,0 +1,54 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: enable
+  SuggestExtensions: false
+
+Style/Documentation:
+  Enabled: false
+
+Style/OpenStructUse:
+  Exclude:
+    - spec/**/*
+
+Naming/FileName:
+  Exclude:
+    - lib/idp-jwt.rb
+
+Gemspec/DevelopmentDependencies:
+  EnforcedStyle: gemspec
+
+Metrics/AbcSize:
+  Max: 30
+  Exclude:
+    - spec/**/*
+
+Metrics/MethodLength:
+  Max: 30
+  Exclude:
+    - spec/**/*
+
+Metrics/CyclomaticComplexity:
+  Max: 15
+
+Metrics/PerceivedComplexity:
+  Max: 17
+
+Metrics/BlockLength:
+  AllowedMethods:
+    - describe
+    - context
+    - it
+    - shared_examples
+    - shared_context
+
+Layout/LineLength:
+  Max: 150
+
+RSpec/MultipleExpectations:
+  Max: 3
+
+RSpec/ExampleLength:
+  Max: 10
