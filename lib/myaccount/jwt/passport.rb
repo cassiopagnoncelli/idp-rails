@@ -70,6 +70,10 @@ module MyAccount
         account_context&.dig(:role)
       end
 
+      def membership_status
+        account_context&.dig(:status)
+      end
+
       def account_selected?
         !account_context.nil?
       end
@@ -103,6 +107,10 @@ module MyAccount
 
       def platform_admin_root?
         user_claims&.dig(:platform_admin_root) == true
+      end
+
+      def user_status
+        user_claims&.dig(:status)
       end
 
       # --- Scopes ---

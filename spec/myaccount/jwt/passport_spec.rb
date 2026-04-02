@@ -12,14 +12,16 @@ RSpec.describe MyAccount::JWT::Passport do
         type: "Merchant",
         uuid: "mrc_def456",
         membership_uuid: "mbr_ghi012",
-        role: "admin"
+        role: "admin",
+        status: "active"
       },
       user: {
         email: "alice@example.com",
         name: "Alice",
         platform_admin: false,
         platform_admin_root: false,
-        mfa_verified: true
+        mfa_verified: true,
+        status: "active"
       },
       scopes: [ "read", "write", "admin", "api_keys" ]
     }
@@ -64,6 +66,10 @@ RSpec.describe MyAccount::JWT::Passport do
       expect(passport.role).to eq("admin")
     end
 
+    it "exposes membership_status" do
+      expect(passport.membership_status).to eq("active")
+    end
+
     it "reports account_selected?" do
       expect(passport.account_selected?).to be true
     end
@@ -74,6 +80,7 @@ RSpec.describe MyAccount::JWT::Passport do
       it "returns nil for account fields" do
         expect(passport.account_type).to be_nil
         expect(passport.role).to be_nil
+        expect(passport.membership_status).to be_nil
       end
 
       it "reports account not selected" do
@@ -110,6 +117,15 @@ RSpec.describe MyAccount::JWT::Passport do
 
     it "returns nil when locale is not set" do
       expect(passport.locale).to be_nil
+    end
+
+    it "exposes user_status" do
+      expect(passport.user_status).to eq("active")
+    end
+
+    it "returns nil when user_status is not set" do
+      without_status = described_class.new(claims.merge(user: claims[:user].except(:status)))
+      expect(without_status.user_status).to be_nil
     end
   end
 
