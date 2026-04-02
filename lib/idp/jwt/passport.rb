@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-module MyAccount
+module Idp
   module JWT
     # A decoded and verified JWT passport. Provides typed accessors
-    # for all standard claims issued by MyAccount.
+    # for all standard claims issued by Idp.
     #
     # @example
-    #   passport = MyAccount::JWT.verify!(token)
+    #   passport = Idp::JWT.verify!(token)
     #   passport.user_uuid        # => "usr_a1b2c3d4"
     #   passport.mfa_verified?    # => true
     #   passport.platform_admin?  # => false

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-module MyAccount
+module Idp
   module JWT
     class Verifier
-      def initialize(config: MyAccount::JWT.configuration, jwks_client: nil, revocation_subscriber: nil)
+      def initialize(config: Idp::JWT.configuration, jwks_client: nil, revocation_subscriber: nil)
         @config = config
         @jwks_client = jwks_client || default_jwks_client
         @revocation_subscriber = revocation_subscriber

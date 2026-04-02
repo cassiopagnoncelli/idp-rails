@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe MyAccount::JWT::Verifier do
+RSpec.describe Idp::JWT::Verifier do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
@@ -34,7 +34,7 @@ RSpec.describe MyAccount::JWT::Verifier do
       token = TestKeys.sign_token(valid_payload, key_pair)
       passport = described_class.new.verify!(token)
 
-      expect(passport).to be_a(MyAccount::JWT::Passport)
+      expect(passport).to be_a(Idp::JWT::Passport)
       expect(passport.user_uuid).to eq("usr_abc123")
     end
 
@@ -50,7 +50,7 @@ RSpec.describe MyAccount::JWT::Verifier do
       token = TestKeys.sign_token(payload, key_pair)
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(MyAccount::JWT::ExpiredTokenError)
+        .to raise_error(Idp::JWT::ExpiredTokenError)
     end
 
     it "raises InvalidIssuerError for wrong issuer" do
@@ -58,7 +58,7 @@ RSpec.describe MyAccount::JWT::Verifier do
       token = TestKeys.sign_token(payload, key_pair)
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(MyAccount::JWT::InvalidIssuerError)
+        .to raise_error(Idp::JWT::InvalidIssuerError)
     end
 
     it "raises InvalidSignatureError for unknown kid" do
@@ -67,7 +67,7 @@ RSpec.describe MyAccount::JWT::Verifier do
       token = JWT.encode(valid_payload, other_key.private_key, "ES256", { kid: "unknown_key" })
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(MyAccount::JWT::InvalidSignatureError, /Unknown signing key/)
+        .to raise_error(Idp::JWT::InvalidSignatureError, /Unknown signing key/)
     end
 
     it "raises VerificationError for tampered tokens" do
@@ -77,12 +77,12 @@ RSpec.describe MyAccount::JWT::Verifier do
       tampered = parts.join(".")
 
       expect { described_class.new.verify!(tampered) }
-        .to raise_error(MyAccount::JWT::VerificationError)
+        .to raise_error(Idp::JWT::VerificationError)
     end
   end
 
   describe "revocation checking" do
-    let(:subscriber) { MyAccount::JWT::RevocationSubscriber.new }
+    let(:subscriber) { Idp::JWT::RevocationSubscriber.new }
 
     it "rejects revoked users" do
       subscriber.block!("usr_abc123")
@@ -91,7 +91,7 @@ RSpec.describe MyAccount::JWT::Verifier do
       verifier = described_class.new(revocation_subscriber: subscriber)
 
       expect { verifier.verify!(token) }
-        .to raise_error(MyAccount::JWT::RevokedTokenError)
+        .to raise_error(Idp::JWT::RevokedTokenError)
     end
 
     it "passes non-revoked users" do

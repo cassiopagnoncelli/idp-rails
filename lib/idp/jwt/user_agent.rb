@@ -2,16 +2,16 @@
 
 require "browser"
 
-module MyAccount
+module Idp
   module JWT
     # Parses a User-Agent string into a human-readable device name
     # in the format "[browser] on [platform]" (e.g. "Safari on macOS").
     #
-    # This mirrors the logic used by the MyAccount login screen so that
+    # This mirrors the logic used by the Idp login screen so that
     # sister apps (CRM, etc.) display the same device names.
     #
     # @example
-    #   MyAccount::JWT::UserAgent.device_name("Mozilla/5.0 (Macintosh; ...) Safari/605.1.15")
+    #   Idp::JWT::UserAgent.device_name("Mozilla/5.0 (Macintosh; ...) Safari/605.1.15")
     #   # => "Safari on macOS"
     module UserAgent
       module_function

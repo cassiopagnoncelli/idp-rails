@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe MyAccount::JWT::Passport do
+RSpec.describe Idp::JWT::Passport do
   let(:claims) do
     {
       iss: "https://account.test",

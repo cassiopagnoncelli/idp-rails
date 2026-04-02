@@ -2,7 +2,7 @@
 
 require "ostruct"
 require "webmock/rspec"
-require "myaccount-jwt"
+require "idp-jwt"
 
 # Generate a test ES256 key pair for signing tokens in specs.
 module TestKeys
@@ -44,8 +44,8 @@ end
 
 RSpec.configure do |config|
   config.before(:each) do
-    MyAccount::JWT.reset_configuration!
-    MyAccount::JWT.configure do |c|
+    Idp::JWT.reset_configuration!
+    Idp::JWT.configure do |c|
       c.jwks_url = "https://account.test/.well-known/jwks.json"
       c.issuer = "https://account.test"
     end

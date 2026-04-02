@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe MyAccount::JWT::UserAgent do
+RSpec.describe Idp::JWT::UserAgent do
   describe ".device_name" do
     it "parses Safari on macOS" do
       ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"

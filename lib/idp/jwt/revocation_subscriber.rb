@@ -2,14 +2,14 @@
 
 require "monitor"
 
-module MyAccount
+module Idp
   module JWT
-    # Subscribes to the MyAccount Redis pub/sub revocation channel and maintains
+    # Subscribes to the Idp Redis pub/sub revocation channel and maintains
     # an in-memory blocklist of revoked user UUIDs. Entries auto-expire after
     # the access token TTL (15 minutes by default).
     #
     # Usage:
-    #   subscriber = MyAccount::JWT::RevocationSubscriber.new(redis: Redis.new)
+    #   subscriber = Idp::JWT::RevocationSubscriber.new(redis: Redis.new)
     #   subscriber.start  # spawns a background thread
     #
     #   subscriber.revoked?("usr_abc123")  # => true/false
@@ -22,7 +22,7 @@ module MyAccount
       # Should match the access token TTL.
       BLOCKLIST_TTL = 900 # 15 minutes
 
-      def initialize(redis: nil, channel: nil, config: MyAccount::JWT.configuration)
+      def initialize(redis: nil, channel: nil, config: Idp::JWT.configuration)
         super() # MonitorMixin
         @config = config
         @redis_config = redis || config.redis
@@ -60,7 +60,7 @@ module MyAccount
           @thread.abort_on_exception = false
         end
 
-        @config.logger.info("[MyAccount::JWT] Revocation subscriber started on channel: #{@channel}")
+        @config.logger.info("[Idp::JWT] Revocation subscriber started on channel: #{@channel}")
         self
       end
 
@@ -69,7 +69,7 @@ module MyAccount
         synchronize { @running = false }
         @subscriber_redis&.close
         @thread&.join(5)
-        @config.logger.info("[MyAccount::JWT] Revocation subscriber stopped")
+        @config.logger.info("[Idp::JWT] Revocation subscriber stopped")
       end
 
       # Check if the subscriber is running.
@@ -107,12 +107,12 @@ module MyAccount
         end
       rescue Redis::BaseConnectionError => e
         if synchronize { @running }
-          @config.logger.error("[MyAccount::JWT] Revocation subscriber connection lost: #{e.message}, reconnecting in 5s...")
+          @config.logger.error("[Idp::JWT] Revocation subscriber connection lost: #{e.message}, reconnecting in 5s...")
           sleep 5
           retry
         end
       rescue => e
-        @config.logger.error("[MyAccount::JWT] Revocation subscriber error: #{e.message}")
+        @config.logger.error("[Idp::JWT] Revocation subscriber error: #{e.message}")
       end
 
       def handle_message(message)
@@ -121,9 +121,9 @@ module MyAccount
         return unless user_uuid
 
         block!(user_uuid)
-        @config.logger.info("[MyAccount::JWT] User revoked: #{user_uuid} (reason: #{data['reason']})")
+        @config.logger.info("[Idp::JWT] User revoked: #{user_uuid} (reason: #{data['reason']})")
       rescue JSON::ParserError => e
-        @config.logger.warn("[MyAccount::JWT] Invalid revocation message: #{e.message}")
+        @config.logger.warn("[Idp::JWT] Invalid revocation message: #{e.message}")
       end
 
       def build_redis

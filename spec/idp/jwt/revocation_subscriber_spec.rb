@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe MyAccount::JWT::RevocationSubscriber do
+RSpec.describe Idp::JWT::RevocationSubscriber do
   subject(:subscriber) { described_class.new }
 
   describe "#revoked?" do

@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name          = "myaccount-jwt"
+  spec.name          = "idp-jwt"
   spec.version       = "0.1.0"
-  spec.authors       = [ "MyAccount Team" ]
-  spec.summary       = "JWT verification client for MyAccount identity provider"
-  spec.description   = "Shared library for sister apps to verify JWT passports issued by MyAccount. " \
+  spec.authors       = [ "Idp Team" ]
+  spec.summary       = "JWT verification client for Idp identity provider"
+  spec.description   = "Shared library for sister apps to verify JWT passports issued by Idp. " \
                         "Handles JWKS fetching/caching, ES256 signature verification, claim validation, " \
                         "and optional Redis pub/sub revocation listening."
   spec.license       = "MIT"

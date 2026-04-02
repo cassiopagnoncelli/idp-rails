@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-module MyAccount
+module Idp
   module JWT
     module Rails
       # Include this concern in your ApplicationController to add JWT authentication.
       #
       # @example
       #   class ApplicationController < ActionController::API
-      #     include MyAccount::JWT::Rails::ControllerConcern
+      #     include Idp::JWT::Rails::ControllerConcern
       #
       #     before_action :authenticate!
       #   end
@@ -37,7 +37,7 @@ module MyAccount
         #
         # @return [Passport, nil]
         def passport
-          @_myaccount_passport
+          @_idp_passport
         end
 
         # Authenticate the current request via Bearer token.
@@ -48,7 +48,7 @@ module MyAccount
             return render_auth_error("missing_token", status: :unauthorized)
           end
 
-          @_myaccount_passport = MyAccount::JWT.verify!(token)
+          @_idp_passport = Idp::JWT.verify!(token)
         rescue ExpiredTokenError
           render_auth_error("token_expired", status: :unauthorized)
         rescue RevokedTokenError

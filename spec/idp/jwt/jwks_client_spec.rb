@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe MyAccount::JWT::JwksClient do
+RSpec.describe Idp::JWT::JwksClient do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
@@ -47,7 +47,7 @@ RSpec.describe MyAccount::JWT::JwksClient do
       client.public_key(key_pair.kid) # load cache
 
       expect { client.public_key("nonexistent") }
-        .to raise_error(MyAccount::JWT::InvalidSignatureError, /Unknown signing key/)
+        .to raise_error(Idp::JWT::InvalidSignatureError, /Unknown signing key/)
     end
   end
 
@@ -68,7 +68,7 @@ RSpec.describe MyAccount::JWT::JwksClient do
 
       client.clear!
       expect { client.public_key("any") }
-        .to raise_error(MyAccount::JWT::Error, /JWKS fetch failed/)
+        .to raise_error(Idp::JWT::Error, /JWKS fetch failed/)
     end
   end
 end

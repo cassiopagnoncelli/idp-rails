@@ -1,6 +1,6 @@
-# myaccount-jwt
+# idp-jwt
 
-JWT verification client for sister apps authenticating against the MyAccount identity provider.
+JWT verification client for sister apps authenticating against the Idp identity provider.
 
 Handles JWKS fetching/caching, ES256 signature verification, claim validation, and optional real-time token revocation via Redis pub/sub.
 
@@ -9,30 +9,30 @@ Handles JWKS fetching/caching, ES256 signature verification, claim validation, a
 Add to your Gemfile:
 
 ```ruby
-gem "myaccount-jwt", path: "../myaccount/gems/myaccount-jwt"
+gem "idp-jwt", path: "../idp/gems/idp-jwt"
 ```
 
 For Rails apps, require the Rails integration instead of the base library:
 
 ```ruby
 # config/application.rb or an initializer
-require "myaccount/jwt/rails"
+require "idp/jwt/rails"
 ```
 
-The Railtie auto-configures from environment variables (`MYACCOUNT_JWKS_URL`, `MYACCOUNT_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
+The Railtie auto-configures from environment variables (`IDP_JWKS_URL`, `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
 
 ## Configuration
 
 ```ruby
-MyAccount::JWT.configure do |c|
-  # Required: the MyAccount JWKS endpoint.
+Idp::JWT.configure do |c|
+  # Required: the Idp JWKS endpoint.
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
 
   # Required: must match the `iss` claim in tokens.
   c.issuer = "https://account.yourcompany.com"
 
   # Optional: enable real-time revocation via Redis pub/sub.
-  # When a user is suspended or changes their password, MyAccount
+  # When a user is suspended or changes their password, Idp
   # publishes to this channel. The subscriber maintains a 15-minute
   # in-memory blocklist so revoked tokens are rejected immediately
   # rather than waiting for natural expiry.
@@ -49,7 +49,7 @@ MyAccount::JWT.configure do |c|
   c.clock_skew = 30
 
   # Redis channel name for revocation events.
-  c.revocation_channel = "myaccount:token_revocations"
+  c.revocation_channel = "idp:token_revocations"
 
   # HTTP timeouts for JWKS fetches (seconds).
   c.http_open_timeout = 5
@@ -67,7 +67,7 @@ Include the controller concern and call `authenticate!`:
 
 ```ruby
 class ApplicationController < ActionController::API
-  include MyAccount::JWT::Rails::ControllerConcern
+  include Idp::JWT::Rails::ControllerConcern
 
   before_action :authenticate!
 end
@@ -110,26 +110,26 @@ All authentication errors return JSON:
 ## Usage without Rails
 
 ```ruby
-require "myaccount-jwt"
+require "idp-jwt"
 
-MyAccount::JWT.configure do |c|
+Idp::JWT.configure do |c|
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
   c.issuer   = "https://account.yourcompany.com"
 end
 
-# Returns a Passport or raises MyAccount::JWT::VerificationError
-passport = MyAccount::JWT.verify!(token)
+# Returns a Passport or raises Idp::JWT::VerificationError
+passport = Idp::JWT.verify!(token)
 
 # Returns a Passport or nil
-passport = MyAccount::JWT.verify(token)
+passport = Idp::JWT.verify(token)
 ```
 
 ## The Passport object
 
-`MyAccount::JWT.verify!` returns a `Passport` with typed accessors for all token claims:
+`Idp::JWT.verify!` returns a `Passport` with typed accessors for all token claims:
 
 ```ruby
-passport = MyAccount::JWT.verify!(token)
+passport = Idp::JWT.verify!(token)
 
 # Identity
 passport.user_uuid          # => "usr_a1b2c3d4"
@@ -177,7 +177,7 @@ Access tokens are ES256-signed JWTs with the following claims:
 
 When enabled, the gem subscribes to a Redis pub/sub channel and maintains an in-memory blocklist of revoked user UUIDs. Entries auto-expire after 15 minutes (the access token TTL).
 
-MyAccount publishes to this channel when:
+Idp publishes to this channel when:
 - A user's password is changed
 - A user is suspended by an admin
 - An admin triggers emergency revocation
@@ -185,7 +185,7 @@ MyAccount publishes to this channel when:
 If a sister app misses an event (restart, Redis blip), the access token still expires naturally within 15 minutes. This is a best-effort acceleration layer, not a hard guarantee.
 
 ```ruby
-MyAccount::JWT.configure do |c|
+Idp::JWT.configure do |c|
   c.redis = ENV["REDIS_URL"]   # enables the subscriber
   # c.redis = { host: "redis.internal", port: 6379 }  # also works
   # c.redis = Redis.new(...)  # or pass an instance
@@ -197,12 +197,12 @@ The Railtie starts the subscriber automatically on boot and stops it on shutdown
 Without Rails, manage it manually:
 
 ```ruby
-subscriber = MyAccount::JWT::RevocationSubscriber.new
+subscriber = Idp::JWT::RevocationSubscriber.new
 subscriber.start   # spawns a background thread
 subscriber.stop    # clean shutdown
 
 # Wire it into the verifier
-verifier = MyAccount::JWT::Verifier.new(revocation_subscriber: subscriber)
+verifier = Idp::JWT::Verifier.new(revocation_subscriber: subscriber)
 passport = verifier.verify!(token)
 ```
 
@@ -212,30 +212,30 @@ The JWKS client handles key rotation automatically:
 
 1. Keys are cached for 1 hour (configurable via `jwks_cache_ttl`).
 2. After the TTL, keys are refreshed in a background thread (no request blocking).
-3. If a token arrives signed with an unknown `kid`, the client forces an immediate refresh. This handles the window between MyAccount rotating a key and the cache expiring.
+3. If a token arrives signed with an unknown `kid`, the client forces an immediate refresh. This handles the window between Idp rotating a key and the cache expiring.
 4. If the `kid` is still unknown after refresh, the token is rejected.
 
 ## Exceptions
 
-All exceptions inherit from `MyAccount::JWT::Error`:
+All exceptions inherit from `Idp::JWT::Error`:
 
 ```
-MyAccount::JWT::Error
-  MyAccount::JWT::VerificationError
-    MyAccount::JWT::ExpiredTokenError
-    MyAccount::JWT::InvalidSignatureError
-    MyAccount::JWT::InvalidIssuerError
-    MyAccount::JWT::InvalidAudienceError
-    MyAccount::JWT::RevokedTokenError
+Idp::JWT::Error
+  Idp::JWT::VerificationError
+    Idp::JWT::ExpiredTokenError
+    Idp::JWT::InvalidSignatureError
+    Idp::JWT::InvalidIssuerError
+    Idp::JWT::InvalidAudienceError
+    Idp::JWT::RevokedTokenError
 ```
 
 ## Testing
 
-In your test suite, you can build tokens directly without a running MyAccount instance:
+In your test suite, you can build tokens directly without a running Idp instance:
 
 ```ruby
-# spec/support/myaccount_jwt.rb
-module MyAccountJwtHelper
+# spec/support/idp_jwt.rb
+module IdpJwtHelper
   KEY = OpenSSL::PKey::EC.generate("prime256v1")
 
   def build_test_passport(overrides = {})
@@ -250,13 +250,13 @@ module MyAccountJwtHelper
 
     token = JWT.encode(payload, KEY, "ES256", { kid: "test_key" })
     # Stub verification to skip JWKS fetch
-    allow(MyAccount::JWT).to receive(:verify!).and_return(MyAccount::JWT::Passport.new(payload))
+    allow(Idp::JWT).to receive(:verify!).and_return(Idp::JWT::Passport.new(payload))
     token
   end
 end
 
 RSpec.configure do |config|
-  config.include MyAccountJwtHelper, type: :request
+  config.include IdpJwtHelper, type: :request
 end
 ```
 

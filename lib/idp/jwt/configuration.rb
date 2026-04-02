@@ -2,10 +2,10 @@
 
 require "logger"
 
-module MyAccount
+module Idp
   module JWT
     class Configuration
-      # The MyAccount JWKS endpoint URL.
+      # The Idp JWKS endpoint URL.
       # @return [String]
       attr_accessor :jwks_url
 
@@ -49,7 +49,7 @@ module MyAccount
         @jwks_cache_ttl = 3600
         @clock_skew = 30
         @redis = nil
-        @revocation_channel = "myaccount:token_revocations"
+        @revocation_channel = "idp:token_revocations"
         @http_open_timeout = 5
         @http_read_timeout = 5
         @logger = Logger.new(IO::NULL)

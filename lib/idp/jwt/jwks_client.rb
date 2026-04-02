@@ -2,14 +2,14 @@
 
 require "monitor"
 
-module MyAccount
+module Idp
   module JWT
-    # Fetches and caches JWKS (JSON Web Key Set) from the MyAccount identity provider.
+    # Fetches and caches JWKS (JSON Web Key Set) from the Idp identity provider.
     # Thread-safe with background refresh.
     class JwksClient
       include MonitorMixin
 
-      def initialize(config = MyAccount::JWT.configuration)
+      def initialize(config = Idp::JWT.configuration)
         super() # MonitorMixin
         @config = config
         @keys = {}       # kid => OpenSSL::PKey::EC
@@ -73,7 +73,7 @@ module MyAccount
           @refresh_thread = Thread.new do
             fetch_and_cache
           rescue => e
-            @config.logger.error("[MyAccount::JWT] Background JWKS refresh failed: #{e.message}")
+            @config.logger.error("[Idp::JWT] Background JWKS refresh failed: #{e.message}")
           end
         end
       end
@@ -101,7 +101,7 @@ module MyAccount
           @fetched_at = Time.now
         end
 
-        @config.logger.info("[MyAccount::JWT] JWKS refreshed: #{keys.size} key(s)")
+        @config.logger.info("[Idp::JWT] JWKS refreshed: #{keys.size} key(s)")
       end
 
       def parse_keys(jwks)

@@ -13,7 +13,7 @@ require_relative "jwt/verifier"
 require_relative "jwt/revocation_subscriber"
 require_relative "jwt/user_agent"
 
-module MyAccount
+module Idp
   module JWT
     class Error < StandardError; end
     class VerificationError < Error; end
