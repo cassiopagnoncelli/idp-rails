@@ -8,12 +8,8 @@ module MyAccount
     # @example
     #   passport = MyAccount::JWT.verify!(token)
     #   passport.user_uuid        # => "usr_a1b2c3d4"
-    #   passport.account_type     # => "Merchant"
-    #   passport.role             # => "admin"
-    #   passport.scopes           # => ["read", "write", "admin", "api_keys"]
     #   passport.mfa_verified?    # => true
     #   passport.platform_admin?  # => false
-    #   passport.has_scope?("write") # => true
     class Passport
       attr_reader :claims
 
@@ -42,45 +38,6 @@ module MyAccount
 
       def jwt_id
         claims[:jti]
-      end
-
-      # --- Account context ---
-
-      def account_context
-        claims[:act]
-      end
-
-      def account_type
-        account_context&.dig(:type)
-      end
-
-      def account_id
-        account_context&.dig(:id)
-      end
-
-      def account_uuid
-        account_context&.dig(:uuid)
-      end
-
-      def membership_uuid
-        account_context&.dig(:membership_uuid)
-      end
-
-      def role
-        account_context&.dig(:role)
-      end
-
-      def membership_status
-        account_context&.dig(:status)
-      end
-
-      def account_selected?
-        !account_context.nil?
-      end
-
-      # Convenience: checks if the user's role in the current account is "admin" or "owner".
-      def admin?
-        %w[admin owner].include?(role)
       end
 
       # --- User profile ---
@@ -113,14 +70,8 @@ module MyAccount
         user_claims&.dig(:status)
       end
 
-      # --- Scopes ---
-
-      def scopes
-        Array(claims[:scopes])
-      end
-
-      def has_scope?(scope)
-        scopes.include?(scope.to_s)
+      def terms_version
+        user_claims&.dig(:terms_version)
       end
 
       # --- Helpers ---

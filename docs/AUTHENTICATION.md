@@ -25,21 +25,12 @@ passport.expired?          # boolean
 # User profile
 passport.email
 passport.name
+passport.locale
 passport.mfa_verified?
 passport.platform_admin?
-
-# Account context (from act claim, nil when no account selected)
-passport.account_type      # "Customer", "Merchant", "Partner"
-passport.account_id        # numeric ID in the sister app (nullable)
-passport.account_uuid      # UUID in the sister app (nullable)
-passport.membership_uuid   # the membership's own identifier
-passport.role              # "owner", "admin", "member", "viewer"
-passport.account_selected? # true if act is present
-passport.admin?            # true if role is "admin" or "owner"
-
-# Scopes
-passport.scopes            # ["read", "write", ...]
-passport.has_scope?(scope) # boolean
+passport.platform_admin_root?
+passport.user_status
+passport.terms_version
 
 # Raw claims
 passport.to_h              # full claims hash

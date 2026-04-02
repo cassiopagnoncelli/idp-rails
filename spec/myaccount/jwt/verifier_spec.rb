@@ -14,20 +14,13 @@ RSpec.describe MyAccount::JWT::Verifier do
       iat: Time.now.to_i,
       exp: (Time.now + 900).to_i,
       jti: "tok_xyz789",
-      act: {
-        type: "Merchant",
-        uuid: "mrc_def456",
-        membership_uuid: "mbr_ghi012",
-        role: "admin"
-      },
       user: {
         email: "alice@example.com",
         name: "Alice",
         platform_admin: false,
         platform_admin_root: false,
         mfa_verified: true
-      },
-      scopes: [ "read", "write" ]
+      }
     }
   end
 
@@ -43,8 +36,6 @@ RSpec.describe MyAccount::JWT::Verifier do
 
       expect(passport).to be_a(MyAccount::JWT::Passport)
       expect(passport.user_uuid).to eq("usr_abc123")
-      expect(passport.account_type).to eq("Merchant")
-      expect(passport.role).to eq("admin")
     end
 
     it "strips Bearer prefix" do
@@ -87,37 +78,6 @@ RSpec.describe MyAccount::JWT::Verifier do
 
       expect { described_class.new.verify!(tampered) }
         .to raise_error(MyAccount::JWT::VerificationError)
-    end
-  end
-
-  describe "account type filtering" do
-    before do
-      MyAccount::JWT.configure do |c|
-        c.accepted_account_types = [ "Merchant" ]
-      end
-    end
-
-    it "accepts matching account types" do
-      token = TestKeys.sign_token(valid_payload, key_pair)
-      passport = described_class.new.verify!(token)
-      expect(passport.account_type).to eq("Merchant")
-    end
-
-    it "rejects non-matching account types" do
-      payload = Marshal.load(Marshal.dump(valid_payload))
-      payload[:act][:type] = "Customer"
-      token = TestKeys.sign_token(payload, key_pair)
-
-      expect { described_class.new.verify!(token) }
-        .to raise_error(MyAccount::JWT::InvalidAudienceError, /Customer/)
-    end
-
-    it "allows tokens without account context" do
-      payload = valid_payload.merge(act: nil)
-      token = TestKeys.sign_token(payload, key_pair)
-      passport = described_class.new.verify!(token)
-
-      expect(passport.account_selected?).to be false
     end
   end
 

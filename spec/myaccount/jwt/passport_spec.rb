@@ -8,13 +8,6 @@ RSpec.describe MyAccount::JWT::Passport do
       iat: Time.now.to_i,
       exp: (Time.now + 900).to_i,
       jti: "tok_xyz789",
-      act: {
-        type: "Merchant",
-        uuid: "mrc_def456",
-        membership_uuid: "mbr_ghi012",
-        role: "admin",
-        status: "active"
-      },
       user: {
         email: "alice@example.com",
         name: "Alice",
@@ -22,8 +15,7 @@ RSpec.describe MyAccount::JWT::Passport do
         platform_admin_root: false,
         mfa_verified: true,
         status: "active"
-      },
-      scopes: [ "read", "write", "admin", "api_keys" ]
+      }
     }
   end
 
@@ -46,46 +38,6 @@ RSpec.describe MyAccount::JWT::Passport do
     it "exposes issued_at and expires_at as Time" do
       expect(passport.issued_at).to be_a(Time)
       expect(passport.expires_at).to be_a(Time)
-    end
-  end
-
-  describe "account context" do
-    it "exposes account_type" do
-      expect(passport.account_type).to eq("Merchant")
-    end
-
-    it "exposes account_uuid" do
-      expect(passport.account_uuid).to eq("mrc_def456")
-    end
-
-    it "exposes membership_uuid" do
-      expect(passport.membership_uuid).to eq("mbr_ghi012")
-    end
-
-    it "exposes role" do
-      expect(passport.role).to eq("admin")
-    end
-
-    it "exposes membership_status" do
-      expect(passport.membership_status).to eq("active")
-    end
-
-    it "reports account_selected?" do
-      expect(passport.account_selected?).to be true
-    end
-
-    context "without account context" do
-      let(:claims) { super().merge(act: nil) }
-
-      it "returns nil for account fields" do
-        expect(passport.account_type).to be_nil
-        expect(passport.role).to be_nil
-        expect(passport.membership_status).to be_nil
-      end
-
-      it "reports account not selected" do
-        expect(passport.account_selected?).to be false
-      end
     end
   end
 
@@ -126,17 +78,6 @@ RSpec.describe MyAccount::JWT::Passport do
     it "returns nil when user_status is not set" do
       without_status = described_class.new(claims.merge(user: claims[:user].except(:status)))
       expect(without_status.user_status).to be_nil
-    end
-  end
-
-  describe "scopes" do
-    it "returns scopes array" do
-      expect(passport.scopes).to eq([ "read", "write", "admin", "api_keys" ])
-    end
-
-    it "checks scope presence" do
-      expect(passport.has_scope?("write")).to be true
-      expect(passport.has_scope?("billing")).to be false
     end
   end
 

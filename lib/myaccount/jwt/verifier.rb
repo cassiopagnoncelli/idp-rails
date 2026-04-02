@@ -42,9 +42,6 @@ module MyAccount
 
         passport = Passport.new(payload)
 
-        # Validate account type if configured.
-        validate_account_type!(passport)
-
         # Check revocation blocklist.
         check_revocation!(passport)
 
@@ -61,17 +58,6 @@ module MyAccount
 
       def strip_bearer(token)
         token.to_s.sub(/\ABearer\s+/i, "")
-      end
-
-      def validate_account_type!(passport)
-        accepted = @config.accepted_account_types
-        return unless accepted
-        return unless passport.account_selected?
-
-        unless accepted.include?(passport.account_type)
-          raise InvalidAudienceError,
-            "Account type '#{passport.account_type}' is not accepted by this application"
-        end
       end
 
       def check_revocation!(passport)

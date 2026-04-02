@@ -2,7 +2,7 @@
 
 JWT verification client for sister apps authenticating against the MyAccount identity provider.
 
-Handles JWKS fetching/caching, ES256 signature verification, claim validation, account type filtering, and optional real-time token revocation via Redis pub/sub.
+Handles JWKS fetching/caching, ES256 signature verification, claim validation, and optional real-time token revocation via Redis pub/sub.
 
 ## Installation
 
@@ -30,11 +30,6 @@ MyAccount::JWT.configure do |c|
 
   # Required: must match the `iss` claim in tokens.
   c.issuer = "https://account.yourcompany.com"
-
-  # Optional: restrict which account types this app accepts.
-  # Tokens scoped to a different type are rejected with 403.
-  # Set to nil (default) to accept any type.
-  c.accepted_account_types = ["Merchant"]
 
   # Optional: enable real-time revocation via Redis pub/sub.
   # When a user is suspended or changes their password, MyAccount
@@ -75,7 +70,6 @@ class ApplicationController < ActionController::API
   include MyAccount::JWT::Rails::ControllerConcern
 
   before_action :authenticate!
-  before_action :require_account!
 end
 ```
 
@@ -83,18 +77,10 @@ Then use `passport` in your controllers:
 
 ```ruby
 class ProductsController < ApplicationController
-  before_action -> { require_scope!("write") }, only: [:create, :update]
-
-  def index
-    products = Product.where(merchant_uuid: passport.account_uuid)
-    render json: products
-  end
-
   def show
     render json: {
       product: Product.find(params[:id]),
-      accessed_by: passport.user_uuid,
-      role: passport.role
+      accessed_by: passport.user_uuid
     }
   end
 end
@@ -106,8 +92,6 @@ end
 |---|---|
 | `authenticate!` | Verifies the Bearer token. Returns 401 on failure. |
 | `passport` | The verified `Passport` object (available after `authenticate!`). |
-| `require_account!` | Returns 403 if no account context is selected. |
-| `require_scope!(scope)` | Returns 403 if the token lacks the given scope. |
 
 ### Error responses
 
@@ -122,9 +106,6 @@ All authentication errors return JSON:
 | `missing_token` | 401 | No `Authorization: Bearer ...` header. |
 | `token_expired` | 401 | Access token has expired. Client should refresh. |
 | `token_revoked` | 401 | User was revoked via Redis pub/sub. |
-| `account_not_selected` | 403 | Token has no account context (`act` is null). |
-| `insufficient_scope` | 403 | Token lacks the required scope. |
-| Account type mismatch | 403 | Token is for a different app (e.g., Customer token sent to Merchant app). |
 
 ## Usage without Rails
 
@@ -155,21 +136,9 @@ passport.user_uuid          # => "usr_a1b2c3d4"
 passport.email              # => "alice@example.com"
 passport.name               # => "Alice"
 
-# Account context (nil if no account selected)
-passport.account_selected?  # => true
-passport.account_type       # => "Merchant"
-passport.account_uuid       # => "mrc_x1y2z3"
-passport.membership_uuid    # => "mbr_q1w2e3r4t5y6"
-passport.role               # => "admin"
-
 # Security
 passport.mfa_verified?      # => true
 passport.platform_admin?    # => false
-
-# Scopes (derived from the membership role)
-passport.scopes             # => ["read", "write", "admin", "api_keys"]
-passport.has_scope?("write") # => true
-passport.has_scope?("billing") # => false
 
 # Token metadata
 passport.issuer             # => "https://account.yourcompany.com"
@@ -193,25 +162,16 @@ Access tokens are ES256-signed JWTs with the following claims:
   "iat": 1711800000,
   "exp": 1711800900,
   "jti": "tok_f9e8d7c6b5a4",
-  "act": {
-    "type": "Merchant",
-    "uuid": "mrc_x1y2z3",
-    "membership_uuid": "mbr_q1w2e3r4t5y6",
-    "role": "admin"
-  },
   "user": {
     "email": "alice@example.com",
     "name": "Alice",
     "platform_admin": false,
     "mfa_verified": true
-  },
-  "scopes": ["read", "write", "admin", "api_keys"]
+  }
 }
 ```
 
-- `act` is `null` before the user selects an account. These tokens only carry `["identity:read"]` scopes.
 - `user.mfa_verified` indicates whether the user completed 2FA during this session. Use this to gate sensitive operations.
-- `scopes` are derived from the membership role: owner > admin > member > viewer.
 
 ## Real-time revocation
 
@@ -285,9 +245,7 @@ module MyAccountJwtHelper
       iat: Time.now.to_i,
       exp: (Time.now + 900).to_i,
       jti: "tok_test",
-      act: { type: "Merchant", uuid: "mrc_test", membership_uuid: "mbr_test", role: "admin" },
-      user: { email: "test@example.com", name: "Test", platform_admin: false, mfa_verified: true },
-      scopes: ["read", "write", "admin", "api_keys"]
+      user: { email: "test@example.com", name: "Test", platform_admin: false, mfa_verified: true }
     }.merge(overrides)
 
     token = JWT.encode(payload, KEY, "ES256", { kid: "test_key" })
@@ -306,10 +264,8 @@ Then in your request specs:
 
 ```ruby
 RSpec.describe "Products API", type: :request do
-  it "lists products for the merchant" do
-    token = build_test_passport(
-      act: { type: "Merchant", uuid: "mrc_abc", membership_uuid: "mbr_1", role: "owner" }
-    )
+  it "lists products" do
+    token = build_test_passport
 
     get "/products", headers: { "Authorization" => "Bearer #{token}" }
 

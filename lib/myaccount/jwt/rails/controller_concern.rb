@@ -15,8 +15,6 @@ module MyAccount
       #   # In a specific controller:
       #   class MerchantsController < ApplicationController
       #     def index
-      #       passport.account_type  # => "Merchant"
-      #       passport.role          # => "admin"
       #       passport.user_uuid     # => "usr_a1b2c3d4"
       #     end
       #   end
@@ -55,28 +53,8 @@ module MyAccount
           render_auth_error("token_expired", status: :unauthorized)
         rescue RevokedTokenError
           render_auth_error("token_revoked", status: :unauthorized)
-        rescue InvalidAudienceError => e
-          render_auth_error(e.message, status: :forbidden)
         rescue VerificationError => e
           render_auth_error(e.message, status: :unauthorized)
-        end
-
-        # Require that the passport has a specific scope.
-        # Call after authenticate!
-        #
-        # @param scope [String]
-        def require_scope!(scope)
-          unless passport&.has_scope?(scope)
-            render_auth_error("insufficient_scope", status: :forbidden)
-          end
-        end
-
-        # Require that the passport has an account context selected.
-        # Call after authenticate!
-        def require_account!
-          unless passport&.account_selected?
-            render_auth_error("account_not_selected", status: :forbidden)
-          end
         end
 
         private

@@ -20,7 +20,6 @@ module MyAccount
     class ExpiredTokenError < VerificationError; end
     class InvalidSignatureError < VerificationError; end
     class InvalidIssuerError < VerificationError; end
-    class InvalidAudienceError < VerificationError; end
     class RevokedTokenError < VerificationError; end
 
     class << self

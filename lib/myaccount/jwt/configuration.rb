@@ -13,11 +13,6 @@ module MyAccount
       # @return [String]
       attr_accessor :issuer
 
-      # Accepted account types. If set, tokens with act.type not in this list are rejected.
-      # Set to nil to accept any account type.
-      # @return [Array<String>, nil]
-      attr_accessor :accepted_account_types
-
       # JWKS cache TTL in seconds. Keys are refreshed in the background after this period.
       # @return [Integer]
       attr_accessor :jwks_cache_ttl
@@ -51,7 +46,6 @@ module MyAccount
       def initialize
         @jwks_url = nil
         @issuer = "https://account.yourcompany.com"
-        @accepted_account_types = nil
         @jwks_cache_ttl = 3600
         @clock_skew = 30
         @redis = nil
