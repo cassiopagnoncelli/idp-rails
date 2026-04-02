@@ -84,6 +84,11 @@ module MyAccount
         end
       end
 
+      # Remove a user from the blocklist (e.g., after a fresh login).
+      def unblock!(user_uuid)
+        synchronize { @blocklist.delete(user_uuid) }
+      end
+
       # Clear the blocklist (useful for testing).
       def clear!
         synchronize { @blocklist = {} }

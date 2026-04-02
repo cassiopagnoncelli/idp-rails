@@ -102,6 +102,15 @@ RSpec.describe MyAccount::JWT::Passport do
     it "exposes platform_admin_root?" do
       expect(passport.platform_admin_root?).to be false
     end
+
+    it "exposes locale" do
+      localized = described_class.new(claims.merge(user: claims[:user].merge(locale: "pt-BR")))
+      expect(localized.locale).to eq("pt-BR")
+    end
+
+    it "returns nil when locale is not set" do
+      expect(passport.locale).to be_nil
+    end
   end
 
   describe "scopes" do

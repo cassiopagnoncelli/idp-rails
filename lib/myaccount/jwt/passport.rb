@@ -89,6 +89,10 @@ module MyAccount
         user_claims&.dig(:name)
       end
 
+      def locale
+        user_claims&.dig(:locale)
+      end
+
       def mfa_verified?
         user_claims&.dig(:mfa_verified) == true
       end
