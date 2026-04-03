@@ -18,6 +18,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'jwt', '~> 2.9'
 
   spec.add_development_dependency 'redis', '>= 4.0'
+  spec.add_development_dependency 'ostruct'
   spec.add_development_dependency 'rspec', '~> 3.13'
   spec.add_development_dependency 'rubocop', '~> 1.75'
   spec.add_development_dependency 'rubocop-rspec', '~> 3.6'
