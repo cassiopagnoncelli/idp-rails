@@ -44,13 +44,13 @@ module Idp
         # Halts the request with 401 if the token is invalid.
         def authenticate!
           token = extract_bearer_token
-          return render_auth_error('missing_token', status: :unauthorized) unless token
+          return render_auth_error("missing_token", status: :unauthorized) unless token
 
           @_idp_passport = Idp::JWT.verify!(token)
         rescue ExpiredTokenError
-          render_auth_error('token_expired', status: :unauthorized)
+          render_auth_error("token_expired", status: :unauthorized)
         rescue RevokedTokenError
-          render_auth_error('token_revoked', status: :unauthorized)
+          render_auth_error("token_revoked", status: :unauthorized)
         rescue VerificationError => e
           render_auth_error(e.message, status: :unauthorized)
         end
@@ -58,10 +58,10 @@ module Idp
         private
 
         def extract_bearer_token
-          header = request.headers['Authorization']
+          header = request.headers["Authorization"]
           return unless header&.match?(/\ABearer\s/i)
 
-          header.sub(/\ABearer\s+/i, '').presence
+          header.sub(/\ABearer\s+/i, "").presence
         end
 
         def render_auth_error(message, status: :unauthorized)

@@ -4,7 +4,7 @@ RSpec.describe Idp::JWT::Verifier do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
-    { keys: [key_pair.jwk] }.to_json
+    { keys: [ key_pair.jwk ] }.to_json
   end
 
   let(:valid_payload) do

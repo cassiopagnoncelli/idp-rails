@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'monitor'
+require "monitor"
 
 module Idp
   module JWT
@@ -82,12 +82,12 @@ module Idp
       def fetch_and_cache
         uri = URI(@config.jwks_url)
         http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = uri.scheme == 'https'
+        http.use_ssl = uri.scheme == "https"
         http.open_timeout = @config.http_open_timeout
         http.read_timeout = @config.http_read_timeout
 
         request = Net::HTTP::Get.new(uri)
-        request['Accept'] = 'application/json'
+        request["Accept"] = "application/json"
 
         response = http.request(request)
         raise Error, "JWKS fetch failed: HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
@@ -105,16 +105,16 @@ module Idp
 
       def parse_keys(jwks)
         keys = {}
-        Array(jwks['keys']).each do |jwk|
-          next unless jwk['kty'] == 'EC' && jwk['crv'] == 'P-256'
+        Array(jwks["keys"]).each do |jwk|
+          next unless jwk["kty"] == "EC" && jwk["crv"] == "P-256"
 
-          kid = jwk['kid']
+          kid = jwk["kid"]
           next unless kid
 
-          x = Base64.urlsafe_decode64(jwk['x'])
-          y = Base64.urlsafe_decode64(jwk['y'])
+          x = Base64.urlsafe_decode64(jwk["x"])
+          y = Base64.urlsafe_decode64(jwk["y"])
 
-          group = OpenSSL::PKey::EC::Group.new('prime256v1')
+          group = OpenSSL::PKey::EC::Group.new("prime256v1")
           point = OpenSSL::PKey::EC::Point.new(
             group,
             OpenSSL::BN.new("\u0004#{x}#{y}", 2)
@@ -123,8 +123,8 @@ module Idp
           # Build an EC key from the public point.
           asn1 = OpenSSL::ASN1::Sequence.new([
                                                OpenSSL::ASN1::Sequence.new([
-                                                                             OpenSSL::ASN1::ObjectId.new('id-ecPublicKey'),
-                                                                             OpenSSL::ASN1::ObjectId.new('prime256v1')
+                                                                             OpenSSL::ASN1::ObjectId.new("id-ecPublicKey"),
+                                                                             OpenSSL::ASN1::ObjectId.new("prime256v1")
                                                                            ]),
                                                OpenSSL::ASN1::BitString.new(point.to_octet_string(:uncompressed))
                                              ])

@@ -3,7 +3,7 @@
 Gem::Specification.new do |spec|
   spec.name          = 'idp-jwt'
   spec.version       = '0.1.0'
-  spec.authors       = ['Idp Team']
+  spec.authors       = [ 'Idp Team' ]
   spec.summary       = 'JWT verification client for Idp identity provider'
   spec.description   = 'Shared library for sister apps to verify JWT passports issued by Idp. ' \
                        'Handles JWKS fetching/caching, ES256 signature verification, claim validation, ' \
@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.1'
 
   spec.files = Dir['lib/**/*', 'LICENSE', 'README.md']
-  spec.require_paths = ['lib']
+  spec.require_paths = [ 'lib' ]
 
   spec.add_dependency 'browser', '~> 6.2'
   spec.add_dependency 'jwt', '~> 2.9'

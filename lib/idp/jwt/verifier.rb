@@ -21,8 +21,8 @@ module Idp
 
         # Decode header to get kid (without verification).
         header = ::JWT.decode(raw_token, nil, false).last
-        kid = header['kid']
-        raise InvalidSignatureError, 'Token missing kid header' unless kid
+        kid = header["kid"]
+        raise InvalidSignatureError, "Token missing kid header" unless kid
 
         # Fetch the public key for this kid.
         public_key = @jwks_client.public_key(kid)
@@ -33,7 +33,7 @@ module Idp
           public_key,
           true,
           {
-            algorithm: 'ES256',
+            algorithm: "ES256",
             iss: @config.issuer,
             verify_iss: true,
             leeway: @config.clock_skew
@@ -47,9 +47,9 @@ module Idp
 
         passport
       rescue ::JWT::ExpiredSignature
-        raise ExpiredTokenError, 'Access token has expired'
+        raise ExpiredTokenError, "Access token has expired"
       rescue ::JWT::InvalidIssuerError
-        raise InvalidIssuerError, 'Invalid token issuer'
+        raise InvalidIssuerError, "Invalid token issuer"
       rescue ::JWT::DecodeError => e
         raise VerificationError, "Token verification failed: #{e.message}"
       end
@@ -57,7 +57,7 @@ module Idp
       private
 
       def strip_bearer(token)
-        token.to_s.sub(/\ABearer\s+/i, '')
+        token.to_s.sub(/\ABearer\s+/i, "")
       end
 
       def check_revocation!(passport)
@@ -65,7 +65,7 @@ module Idp
 
         return unless @revocation_subscriber.revoked?(passport.user_uuid)
 
-        raise RevokedTokenError, 'Token has been revoked'
+        raise RevokedTokenError, "Token has been revoked"
       end
 
       def default_jwks_client
