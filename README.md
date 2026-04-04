@@ -137,6 +137,7 @@ passport.email              # => "alice@example.com"
 passport.name               # => "Alice"
 
 # Security
+passport.email_verified?    # => true
 passport.mfa_verified?      # => true
 passport.platform_admin?    # => false
 
@@ -165,12 +166,14 @@ Access tokens are ES256-signed JWTs with the following claims:
   "user": {
     "email": "alice@example.com",
     "name": "Alice",
+    "email_verified": true,
     "platform_admin": false,
     "mfa_verified": true
   }
 }
 ```
 
+- `user.email_verified` indicates whether the user's email address has been verified.
 - `user.mfa_verified` indicates whether the user completed 2FA during this session. Use this to gate sensitive operations.
 
 ## Real-time revocation

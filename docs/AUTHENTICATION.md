@@ -26,6 +26,7 @@ passport.expired?          # boolean
 passport.email
 passport.name
 passport.locale
+passport.email_verified?
 passport.mfa_verified?
 passport.platform_admin?
 passport.platform_admin_root?

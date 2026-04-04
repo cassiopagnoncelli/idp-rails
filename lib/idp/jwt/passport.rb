@@ -8,6 +8,7 @@ module Idp
     # @example
     #   passport = Idp::JWT.verify!(token)
     #   passport.user_uuid        # => "usr_a1b2c3d4"
+    #   passport.email_verified?  # => true
     #   passport.mfa_verified?    # => true
     #   passport.platform_admin?  # => false
     class Passport
@@ -52,6 +53,13 @@ module Idp
 
       def locale
         user_claims&.dig(:locale)
+      end
+
+      def email_verified?
+        raw = user_claims&.dig(:email_verified)
+        raw = claims[:email_verified] if raw.nil?
+
+        truthy_claim?(raw)
       end
 
       def mfa_verified?
@@ -106,6 +114,14 @@ module Idp
         else
           obj
         end
+      end
+
+      def truthy_claim?(value)
+        return true if value == true || value == 1
+
+        return false unless value.is_a?(String)
+
+        %w[true 1 yes].include?(value.strip.downcase)
       end
     end
   end

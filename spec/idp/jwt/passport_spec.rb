@@ -13,6 +13,7 @@ RSpec.describe Idp::JWT::Passport do
       user: {
         email: 'alice@example.com',
         name: 'Alice',
+        email_verified: true,
         platform_admin: false,
         platform_admin_root: false,
         mfa_verified: true,
@@ -48,6 +49,33 @@ RSpec.describe Idp::JWT::Passport do
 
     it 'exposes name' do
       expect(passport.name).to eq('Alice')
+    end
+
+    it 'exposes email_verified?' do
+      expect(passport.email_verified?).to be true
+    end
+
+    it 'returns false when email_verified is false' do
+      unverified = described_class.new(claims.merge(user: claims[:user].merge(email_verified: false)))
+      expect(unverified.email_verified?).to be false
+    end
+
+    it 'returns false when email_verified is not set' do
+      without_email_verification = described_class.new(claims.merge(user: claims[:user].except(:email_verified)))
+      expect(without_email_verification.email_verified?).to be false
+    end
+
+    it 'reads top-level email_verified when user claim is not present' do
+      top_level = described_class.new(claims.merge(email_verified: true, user: claims[:user].except(:email_verified)))
+      expect(top_level.email_verified?).to be true
+    end
+
+    it 'treats string email_verified values as booleans' do
+      string_true = described_class.new(claims.merge(user: claims[:user].merge(email_verified: 'true')))
+      string_false = described_class.new(claims.merge(user: claims[:user].merge(email_verified: 'false')))
+
+      expect(string_true.email_verified?).to be true
+      expect(string_false.email_verified?).to be false
     end
 
     it 'exposes mfa_verified?' do
