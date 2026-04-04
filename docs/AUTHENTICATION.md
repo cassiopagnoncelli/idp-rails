@@ -28,6 +28,8 @@ passport.name
 passport.locale
 passport.time_zone
 passport.phone_number
+passport.created_at         # Unix seconds integer
+passport.confirmed_at       # Unix seconds integer or nil
 passport.email_verified?
 passport.mfa_verified?
 passport.platform_admin?

@@ -17,6 +17,8 @@ RSpec.describe Idp::JWT::Passport do
         locale: nil,
         time_zone: 'UTC',
         phone_number: nil,
+        created_at: 1_712_000_000,
+        confirmed_at: 1_712_000_100,
         platform_admin: false,
         platform_admin_root: false,
         mfa_verified: true,
@@ -124,6 +126,29 @@ RSpec.describe Idp::JWT::Passport do
     it 'falls back to legacy mobile claim' do
       legacy = described_class.new(claims.merge(user: claims[:user].except(:phone_number).merge(mobile: '+5511999999999')))
       expect(legacy.phone_number).to eq('+5511999999999')
+    end
+
+    it 'exposes created_at' do
+      expect(passport.created_at).to eq(1_712_000_000)
+    end
+
+    it 'returns nil when created_at is not set' do
+      without_created_at = described_class.new(claims.merge(user: claims[:user].except(:created_at)))
+      expect(without_created_at.created_at).to be_nil
+    end
+
+    it 'exposes confirmed_at' do
+      expect(passport.confirmed_at).to eq(1_712_000_100)
+    end
+
+    it 'returns nil when confirmed_at is nil' do
+      unconfirmed = described_class.new(claims.merge(user: claims[:user].merge(confirmed_at: nil)))
+      expect(unconfirmed.confirmed_at).to be_nil
+    end
+
+    it 'returns nil when confirmed_at is not set' do
+      without_confirmed_at = described_class.new(claims.merge(user: claims[:user].except(:confirmed_at)))
+      expect(without_confirmed_at.confirmed_at).to be_nil
     end
 
     it 'exposes user_status' do

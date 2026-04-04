@@ -63,6 +63,14 @@ module Idp
         user_claims&.dig(:phone_number) || user_claims&.dig(:mobile)
       end
 
+      def created_at
+        user_claims&.dig(:created_at)
+      end
+
+      def confirmed_at
+        user_claims&.dig(:confirmed_at)
+      end
+
       def email_verified?
         raw = user_claims&.dig(:email_verified)
         raw = claims[:email_verified] if raw.nil?
