@@ -14,6 +14,9 @@ RSpec.describe Idp::JWT::Passport do
         email: 'alice@example.com',
         name: 'Alice',
         email_verified: true,
+        locale: nil,
+        time_zone: 'UTC',
+        phone_number: nil,
         platform_admin: false,
         platform_admin_root: false,
         mfa_verified: true,
@@ -97,6 +100,30 @@ RSpec.describe Idp::JWT::Passport do
 
     it 'returns nil when locale is not set' do
       expect(passport.locale).to be_nil
+    end
+
+    it 'exposes time_zone' do
+      zoned = described_class.new(claims.merge(user: claims[:user].merge(time_zone: 'America/Sao_Paulo')))
+      expect(zoned.time_zone).to eq('America/Sao_Paulo')
+    end
+
+    it 'returns nil when time_zone is not set' do
+      without_time_zone = described_class.new(claims.merge(user: claims[:user].except(:time_zone)))
+      expect(without_time_zone.time_zone).to be_nil
+    end
+
+    it 'exposes phone_number' do
+      with_phone_number = described_class.new(claims.merge(user: claims[:user].merge(phone_number: '+5511999999999')))
+      expect(with_phone_number.phone_number).to eq('+5511999999999')
+    end
+
+    it 'returns nil when phone_number is not set' do
+      expect(passport.phone_number).to be_nil
+    end
+
+    it 'falls back to legacy mobile claim' do
+      legacy = described_class.new(claims.merge(user: claims[:user].except(:phone_number).merge(mobile: '+5511999999999')))
+      expect(legacy.phone_number).to eq('+5511999999999')
     end
 
     it 'exposes user_status' do

@@ -55,6 +55,14 @@ module Idp
         user_claims&.dig(:locale)
       end
 
+      def time_zone
+        user_claims&.dig(:time_zone)
+      end
+
+      def phone_number
+        user_claims&.dig(:phone_number) || user_claims&.dig(:mobile)
+      end
+
       def email_verified?
         raw = user_claims&.dig(:email_verified)
         raw = claims[:email_verified] if raw.nil?

@@ -135,6 +135,9 @@ passport = Idp::JWT.verify!(token)
 passport.user_uuid          # => "usr_a1b2c3d4"
 passport.email              # => "alice@example.com"
 passport.name               # => "Alice"
+passport.locale             # => "pt-BR"
+passport.time_zone          # => "America/Sao_Paulo"
+passport.phone_number       # => "+5511999999999"
 
 # Security
 passport.email_verified?    # => true
@@ -167,13 +170,18 @@ Access tokens are ES256-signed JWTs with the following claims:
     "email": "alice@example.com",
     "name": "Alice",
     "email_verified": true,
+    "locale": "pt-BR",
+    "time_zone": "America/Sao_Paulo",
+    "phone_number": "+5511999999999",
     "platform_admin": false,
+    "platform_admin_root": false,
     "mfa_verified": true
   }
 }
 ```
 
 - `user.email_verified` indicates whether the user's email address has been verified.
+- `user.time_zone` and `user.phone_number` carry identity profile fields from Idp.
 - `user.mfa_verified` indicates whether the user completed 2FA during this session. Use this to gate sensitive operations.
 
 ## Real-time revocation
