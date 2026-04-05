@@ -84,7 +84,7 @@ RSpec.describe Idp::JWT::JwksClient do
 
     describe 'L2 cache hit' do
       it 'loads keys from Redis without hitting the IDP' do
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(jwks_response)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(jwks_response)
 
         public_key = client.public_key(key_pair.kid)
 
@@ -95,14 +95,14 @@ RSpec.describe Idp::JWT::JwksClient do
 
     describe 'L2 cache miss' do
       it 'fetches from origin and writes to Redis' do
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(nil)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(nil)
         allow(redis).to receive(:set)
 
         client.public_key(key_pair.kid)
 
         expect(WebMock).to have_requested(:get, 'https://account.test/.well-known/jwks.json').once
         expect(redis).to have_received(:set).with(
-          described_class::REDIS_KEY,
+          described_class::BASE_REDIS_KEY,
           jwks_response,
           ex: config.jwks_cache_ttl
         )
@@ -111,14 +111,14 @@ RSpec.describe Idp::JWT::JwksClient do
 
     describe 'Redis write-through' do
       it 'stores the raw JSON body with the configured TTL' do
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(nil)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(nil)
         allow(redis).to receive(:set)
 
         config.jwks_cache_ttl = 1800
         client.public_key(key_pair.kid)
 
         expect(redis).to have_received(:set).with(
-          described_class::REDIS_KEY,
+          described_class::BASE_REDIS_KEY,
           jwks_response,
           ex: 1800
         )
@@ -128,7 +128,7 @@ RSpec.describe Idp::JWT::JwksClient do
     describe 'refresh! bypasses Redis read' do
       it 'always fetches from origin on refresh' do
         # First load from Redis
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(jwks_response)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(jwks_response)
         allow(redis).to receive(:set)
         client.public_key(key_pair.kid)
 
@@ -139,7 +139,7 @@ RSpec.describe Idp::JWT::JwksClient do
 
         expect(WebMock).to have_requested(:get, 'https://account.test/.well-known/jwks.json').once
         expect(redis).to have_received(:set).with(
-          described_class::REDIS_KEY,
+          described_class::BASE_REDIS_KEY,
           jwks_response,
           ex: config.jwks_cache_ttl
         )
@@ -160,7 +160,7 @@ RSpec.describe Idp::JWT::JwksClient do
 
     describe 'Redis write failure' do
       it 'still succeeds and caches in-memory' do
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(nil)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(nil)
         allow(redis).to receive(:set).and_raise(Redis::CannotConnectError, 'Connection refused')
 
         public_key = client.public_key(key_pair.kid)
@@ -175,7 +175,7 @@ RSpec.describe Idp::JWT::JwksClient do
 
     describe 'key rotation with Redis' do
       it 'fetches from origin for unknown kid and updates Redis' do
-        allow(redis).to receive(:get).with(described_class::REDIS_KEY).and_return(jwks_response)
+        allow(redis).to receive(:get).with(described_class::BASE_REDIS_KEY).and_return(jwks_response)
         allow(redis).to receive(:set)
 
         # Load initial keys from Redis
@@ -194,11 +194,36 @@ RSpec.describe Idp::JWT::JwksClient do
         expect(public_key).to be_a(OpenSSL::PKey::EC)
         expect(WebMock).to have_requested(:get, 'https://account.test/.well-known/jwks.json').once
         expect(redis).to have_received(:set).with(
-          described_class::REDIS_KEY,
+          described_class::BASE_REDIS_KEY,
           anything,
           ex: config.jwks_cache_ttl
         )
       end
+    end
+  end
+
+  context 'with Redis cache and namespace' do
+    let(:redis) { instance_double(Redis) }
+    let(:config) do
+      Idp::JWT.configuration.tap do |c|
+        c.cache_redis = redis
+        c.cache_redis_namespace = 'idp_sessions_crm'
+      end
+    end
+    let(:namespaced_key) { "idp_sessions_crm:#{described_class::BASE_REDIS_KEY}" }
+
+    it 'reads and writes using the namespaced key' do
+      allow(redis).to receive(:get).with(namespaced_key).and_return(nil)
+      allow(redis).to receive(:set)
+
+      client.public_key(key_pair.kid)
+
+      expect(redis).to have_received(:get).with(namespaced_key)
+      expect(redis).to have_received(:set).with(
+        namespaced_key,
+        jwks_response,
+        ex: config.jwks_cache_ttl
+      )
     end
   end
 
