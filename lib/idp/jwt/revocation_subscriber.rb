@@ -4,9 +4,15 @@ require "monitor"
 
 module Idp
   module JWT
-    # Subscribes to the Idp Redis pub/sub revocation channel and maintains
-    # an in-memory blocklist of revoked user UUIDs. Entries auto-expire after
-    # the access token TTL (15 minutes by default).
+    # Subscribes to token revocation events and maintains an in-memory
+    # blocklist of revoked user UUIDs. Entries auto-expire after the access
+    # token TTL (15 minutes by default).
+    #
+    # Supports two transports (exclusive-or):
+    #   - RabbitMQ (preferred) — uses a fanout exchange with ephemeral queues
+    #   - Redis pub/sub (fallback) — classic channel subscription
+    #
+    # If +rabbitmq_url+ is configured, RabbitMQ is used; otherwise Redis.
     #
     # Usage:
     #   subscriber = Idp::JWT::RevocationSubscriber.new(redis: Redis.new)
@@ -22,14 +28,19 @@ module Idp
       # Should match the access token TTL.
       BLOCKLIST_TTL = 900 # 15 minutes
 
+      # RabbitMQ fanout exchange name.
+      EXCHANGE_NAME = "idp.token_revocations"
+
       def initialize(redis: nil, channel: nil, config: Idp::JWT.configuration)
         super() # MonitorMixin
         @config = config
         @redis_config = redis || config.redis
+        @rabbitmq_url = config.rabbitmq_url
         @channel = channel || config.revocation_channel
         @blocklist = {} # { "usr_xxx" => expires_at_monotonic }
         @thread = nil
         @running = false
+        @bunny_connection = nil
       end
 
       # Is the given user UUID currently in the revocation blocklist?
@@ -67,7 +78,13 @@ module Idp
       # Stop the background subscriber thread.
       def stop
         synchronize { @running = false }
-        @subscriber_redis&.close
+
+        if @bunny_connection
+          @bunny_connection.close if @bunny_connection.open?
+        else
+          @subscriber_redis&.close
+        end
+
         @thread&.join(5)
         @config.logger.info("[Idp::JWT] Revocation subscriber stopped")
       end
@@ -97,6 +114,14 @@ module Idp
       private
 
       def subscribe_loop
+        if @rabbitmq_url
+          subscribe_loop_rabbitmq
+        else
+          subscribe_loop_redis
+        end
+      end
+
+      def subscribe_loop_redis
         require "redis"
 
         @subscriber_redis = build_redis
@@ -113,6 +138,32 @@ module Idp
         end
       rescue StandardError => e
         @config.logger.error("[Idp::JWT] Revocation subscriber error: #{e.message}")
+      end
+
+      def subscribe_loop_rabbitmq
+        require "bunny"
+
+        @bunny_connection = Bunny.new(@rabbitmq_url)
+        @bunny_connection.start
+
+        ch = @bunny_connection.create_channel
+        exchange = ch.fanout(EXCHANGE_NAME, durable: true)
+        queue = ch.queue("", exclusive: true, auto_delete: true)
+        queue.bind(exchange)
+
+        @config.logger.info("[Idp::JWT] Revocation subscriber bound to RabbitMQ exchange: #{EXCHANGE_NAME}")
+
+        queue.subscribe(block: true) do |_delivery_info, _properties, payload|
+          handle_message(payload)
+        end
+      rescue Bunny::TCPConnectionFailed, Bunny::ConnectionClosedError, Bunny::NetworkFailure => e
+        if synchronize { @running }
+          @config.logger.error("[Idp::JWT] RabbitMQ subscriber connection lost: #{e.message}, reconnecting in 5s...")
+          sleep 5
+          retry
+        end
+      rescue StandardError => e
+        @config.logger.error("[Idp::JWT] RabbitMQ subscriber error: #{e.message}")
       end
 
       def handle_message(message)

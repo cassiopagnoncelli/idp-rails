@@ -14,8 +14,8 @@ module Idp
         end
 
         initializer "idp_jwt.revocation_subscriber" do
-          # Start the revocation subscriber if Redis is configured.
-          if Idp::JWT.configuration.redis
+          # Start the revocation subscriber if a transport (Redis or RabbitMQ) is configured.
+          if Idp::JWT.configuration.rabbitmq_url || Idp::JWT.configuration.redis
             Idp::JWT.configuration.validate!
 
             subscriber = RevocationSubscriber.new

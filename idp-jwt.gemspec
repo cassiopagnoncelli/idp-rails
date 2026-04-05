@@ -7,7 +7,7 @@ Gem::Specification.new do |spec|
   spec.summary       = 'JWT verification client for Idp identity provider'
   spec.description   = 'Shared library for sister apps to verify JWT passports issued by Idp. ' \
                        'Handles JWKS fetching/caching, ES256 signature verification, claim validation, ' \
-                       'and optional Redis pub/sub revocation listening.'
+                       'and optional revocation listening via Redis pub/sub or RabbitMQ.'
   spec.license       = 'MIT'
   spec.required_ruby_version = '>= 3.1'
 
@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'browser', '~> 6.2'
   spec.add_dependency 'jwt', '~> 2.9'
 
+  spec.add_development_dependency 'bunny', '>= 2.20'
   spec.add_development_dependency 'redis', '>= 4.0'
   spec.add_development_dependency 'ostruct'
   spec.add_development_dependency 'rspec', '~> 3.13'

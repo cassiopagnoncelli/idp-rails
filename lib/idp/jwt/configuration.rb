@@ -27,6 +27,13 @@ module Idp
       # @return [Redis, String, Hash, nil]
       attr_accessor :redis
 
+      # RabbitMQ connection URL for the revocation subscriber.
+      # When set, RabbitMQ is used instead of Redis for revocation listening.
+      # Example: "amqp://guest:guest@localhost:5672"
+      # Set to nil to use Redis (default).
+      # @return [String, nil]
+      attr_accessor :rabbitmq_url
+
       # Redis pub/sub channel name for revocation events.
       # @return [String]
       attr_accessor :revocation_channel
@@ -49,6 +56,7 @@ module Idp
         @jwks_cache_ttl = 3600
         @clock_skew = 30
         @redis = nil
+        @rabbitmq_url = nil
         @revocation_channel = "idp:token_revocations"
         @http_open_timeout = 5
         @http_read_timeout = 5
