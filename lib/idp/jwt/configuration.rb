@@ -27,6 +27,17 @@ module Idp
       # @return [Redis, String, Hash, nil]
       attr_accessor :redis
 
+      # Redis configuration for JWKS caching (L2 shared cache across pods).
+      # Can be a Redis instance, a URL string, or a hash of Redis options.
+      # Set to nil to disable Redis-based JWKS caching.
+      # @return [Redis, String, Hash, nil]
+      attr_accessor :cache_redis
+
+      # Namespace prefix for Redis cache keys. When set, all cache keys are
+      # prefixed with "namespace:" to avoid collisions with other apps.
+      # @return [String, nil]
+      attr_accessor :cache_redis_namespace
+
       # RabbitMQ connection URL for the revocation subscriber.
       # When set, RabbitMQ is used instead of Redis for revocation listening.
       # Example: "amqp://guest:guest@localhost:5672"
@@ -56,6 +67,8 @@ module Idp
         @jwks_cache_ttl = 3600
         @clock_skew = 30
         @redis = nil
+        @cache_redis = nil
+        @cache_redis_namespace = nil
         @rabbitmq_url = nil
         @revocation_channel = "idp:token_revocations"
         @http_open_timeout = 5

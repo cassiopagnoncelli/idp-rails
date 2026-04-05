@@ -69,7 +69,7 @@ module Idp
       end
 
       def default_jwks_client
-        @default_jwks_client ||= JwksClient.new(@config)
+        Idp::JWT.jwks_client
       end
     end
   end

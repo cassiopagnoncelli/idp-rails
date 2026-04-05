@@ -31,6 +31,12 @@ module Idp
         yield(configuration)
       end
 
+      # Shared JWKS client instance. Reused across all Verifier instances
+      # so the JWKS cache is effective.
+      def jwks_client
+        @jwks_client ||= JwksClient.new(configuration)
+      end
+
       # Verify a JWT and return a Passport.
       #
       # @param token [String] raw JWT string (with or without "Bearer " prefix)
@@ -52,6 +58,7 @@ module Idp
 
       def reset_configuration!
         @configuration = Configuration.new
+        @jwks_client = nil
       end
     end
   end

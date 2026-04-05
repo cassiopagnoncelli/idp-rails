@@ -5,9 +5,11 @@ require "monitor"
 module Idp
   module JWT
     # Fetches and caches JWKS (JSON Web Key Set) from the Idp identity provider.
-    # Thread-safe with background refresh.
+    # Thread-safe with two-layer caching: L1 in-memory (per-process) + L2 Redis (shared across pods).
     class JwksClient
       include MonitorMixin
+
+      BASE_REDIS_KEY = "idp-jwt:jwks"
 
       def initialize(config = Idp::JWT.configuration)
         super() # MonitorMixin
@@ -15,6 +17,8 @@ module Idp
         @keys = {} # kid => OpenSSL::PKey::EC
         @fetched_at = nil
         @refresh_thread = nil
+        @redis = build_redis(config.cache_redis)
+        @redis_key = config.cache_redis_namespace ? "#{config.cache_redis_namespace}:#{BASE_REDIS_KEY}" : BASE_REDIS_KEY
       end
 
       # Get the public key for a given Key ID.
@@ -39,8 +43,10 @@ module Idp
       end
 
       # Force a synchronous refresh of the JWKS cache.
+      # Always fetches from the IDP origin (bypasses Redis read) to ensure
+      # freshest keys during key rotation. Writes result back to Redis.
       def refresh!
-        fetch_and_cache
+        fetch_from_origin
       end
 
       # Clear the cache (useful in tests).
@@ -79,7 +85,27 @@ module Idp
         end
       end
 
+      # Try Redis L2 first, fall back to IDP origin.
       def fetch_and_cache
+        cached_json = read_from_redis
+        if cached_json
+          jwks = JSON.parse(cached_json)
+          keys = parse_keys(jwks)
+
+          synchronize do
+            @keys = keys
+            @fetched_at = Time.now
+          end
+
+          @config.logger.info("[Idp::JWT] JWKS loaded from Redis cache: #{keys.size} key(s)")
+          return
+        end
+
+        fetch_from_origin
+      end
+
+      # Fetch directly from the IDP JWKS endpoint and update both caches.
+      def fetch_from_origin
         uri = URI(@config.jwks_url)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
@@ -100,7 +126,40 @@ module Idp
           @fetched_at = Time.now
         end
 
-        @config.logger.info("[Idp::JWT] JWKS refreshed: #{keys.size} key(s)")
+        write_to_redis(response.body)
+
+        @config.logger.info("[Idp::JWT] JWKS refreshed from origin: #{keys.size} key(s)")
+      end
+
+      def build_redis(redis_config)
+        return nil unless redis_config
+
+        require "redis"
+
+        case redis_config
+        when String
+          Redis.new(url: redis_config)
+        when Hash
+          Redis.new(**redis_config)
+        else
+          redis_config
+        end
+      rescue StandardError => e
+        @config.logger.warn("[Idp::JWT] Redis unavailable for JWKS cache: #{e.message}")
+        nil
+      end
+
+      def read_from_redis
+        @redis&.get(@redis_key)
+      rescue StandardError => e
+        @config.logger.warn("[Idp::JWT] Redis read failed: #{e.message}")
+        nil
+      end
+
+      def write_to_redis(jwks_json)
+        @redis&.set(@redis_key, jwks_json, ex: @config.jwks_cache_ttl)
+      rescue StandardError => e
+        @config.logger.warn("[Idp::JWT] Redis write failed: #{e.message}")
       end
 
       def parse_keys(jwks)
