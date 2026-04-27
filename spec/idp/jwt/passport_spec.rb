@@ -171,4 +171,64 @@ RSpec.describe Idp::JWT::Passport do
       expect(expired.expired?).to be true
     end
   end
+
+  describe 'service tokens (client_credentials)' do
+    let(:service_claims) do
+      {
+        iss: 'https://account.test',
+        sub: 'crm_service',
+        aud: 'crm_service',
+        iat: Time.now.to_i,
+        exp: (Time.now + 900).to_i,
+        jti: 'svc_xyz',
+        client_id: 'crm_service',
+        scope: 'users:lookup reports:read',
+        token_use: 'client'
+      }
+    end
+    subject(:service_passport) { described_class.new(service_claims) }
+
+    it 'identifies the token as a service token' do
+      expect(service_passport.service?).to be true
+      expect(service_passport.user?).to be false
+      expect(service_passport.token_use).to eq('client')
+    end
+
+    it 'exposes client_id and scopes' do
+      expect(service_passport.client_id).to eq('crm_service')
+      expect(service_passport.scopes).to eq(%w[users:lookup reports:read])
+      expect(service_passport.has_scope?('users:lookup')).to be true
+      expect(service_passport.has_scope?('admin:everything')).to be false
+    end
+
+    it 'namespaces flipper_id under Service: to avoid collisions with users' do
+      expect(service_passport.flipper_id).to eq('Service:crm_service')
+    end
+
+    it 'raises NotAUserToken when user-only accessors are called' do
+      expect { service_passport.email }.to raise_error(Idp::JWT::NotAUserToken, /service token/)
+      expect { service_passport.platform_admin? }.to raise_error(Idp::JWT::NotAUserToken)
+      expect { service_passport.user_uuid }.to raise_error(Idp::JWT::NotAUserToken)
+    end
+
+    it 'still exposes subject (without raising) for diagnostic logging' do
+      expect(service_passport.subject).to eq('crm_service')
+    end
+  end
+
+  describe 'user passports' do
+    it 'reports user? true and service? false' do
+      expect(passport.user?).to be true
+      expect(passport.service?).to be false
+    end
+
+    it 'reports flipper_id under the Passport: namespace' do
+      expect(passport.flipper_id).to eq('Passport:usr_abc123')
+    end
+
+    it 'returns an empty scope list when none are present' do
+      expect(passport.scopes).to eq([])
+      expect(passport.has_scope?('users:lookup')).to be false
+    end
+  end
 end

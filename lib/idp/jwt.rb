@@ -11,6 +11,7 @@ require_relative "jwt/jwks_client"
 require_relative "jwt/passport"
 require_relative "jwt/verifier"
 require_relative "jwt/revocation_subscriber"
+require_relative "jwt/client_credentials_client"
 require_relative "jwt/user_agent"
 
 module Idp
@@ -21,6 +22,19 @@ module Idp
     class InvalidSignatureError < VerificationError; end
     class InvalidIssuerError < VerificationError; end
     class RevokedTokenError < VerificationError; end
+    # Raised when a user-only accessor (e.g. #email) is called on a
+    # service token. Not a VerificationError — the token is valid; the
+    # caller is asking for something the token cannot provide.
+    class NotAUserToken < Error; end
+    class ClientCredentialsError < Error
+      attr_reader :status, :code
+
+      def initialize(message, status: nil, code: nil)
+        super(message)
+        @status = status
+        @code = code
+      end
+    end
 
     class << self
       def configuration

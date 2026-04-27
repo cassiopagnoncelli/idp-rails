@@ -55,6 +55,27 @@ module Idp
           render_auth_error(e.message, status: :unauthorized)
         end
 
+        # Halts the request with 403 insufficient_scope unless the verified
+        # passport carries the named scope. Call after authenticate!.
+        def require_scope!(scope)
+          return if passport&.has_scope?(scope)
+
+          render json: {
+            error: "insufficient_scope",
+            error_description: "This endpoint requires the '#{scope}' scope",
+            scope: scope.to_s
+          }, status: :forbidden
+        end
+
+        # Halts the request with 401 unless the verified passport is a
+        # service (client_credentials) token. Useful for endpoints intended
+        # only for sibling services.
+        def require_service_token!
+          return if passport&.service?
+
+          render_auth_error("invalid_token", status: :unauthorized)
+        end
+
         private
 
         def extract_bearer_token

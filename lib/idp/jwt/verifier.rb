@@ -62,8 +62,11 @@ module Idp
 
       def check_revocation!(passport)
         return unless @revocation_subscriber
+        # Service tokens (client_credentials) are short-lived and not
+        # tracked in the revocation channel. Skip the lookup entirely.
+        return if passport.service?
 
-        return unless @revocation_subscriber.revoked?(passport.user_uuid)
+        return unless @revocation_subscriber.revoked?(passport.subject)
 
         raise RevokedTokenError, "Token has been revoked"
       end
