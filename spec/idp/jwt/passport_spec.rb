@@ -19,8 +19,7 @@ RSpec.describe Idp::JWT::Passport do
         phone_number: nil,
         created_at: 1_712_000_000,
         confirmed_at: 1_712_000_100,
-        platform_admin: false,
-        platform_admin_root: false,
+        platform_role: 'none',
         mfa_verified: true,
         status: 'active'
       }
@@ -87,12 +86,8 @@ RSpec.describe Idp::JWT::Passport do
       expect(passport.mfa_verified?).to be true
     end
 
-    it 'exposes platform_admin?' do
-      expect(passport.platform_admin?).to be false
-    end
-
-    it 'exposes platform_admin_root?' do
-      expect(passport.platform_admin_root?).to be false
+    it 'exposes platform_role' do
+      expect(passport.platform_role).to eq('none')
     end
 
     it 'exposes locale' do
@@ -161,6 +156,68 @@ RSpec.describe Idp::JWT::Passport do
     end
   end
 
+  describe 'platform role tiers' do
+    def with_role(role)
+      user = role.nil? ? claims[:user].except(:platform_role) : claims[:user].merge(platform_role: role)
+      described_class.new(claims.merge(user: user))
+    end
+
+    it 'owner satisfies every tier' do
+      p = with_role('owner')
+      expect(p.platform_owner?).to be true
+      expect(p.platform_admin?).to be true
+      expect(p.platform_member?).to be true
+      expect(p.platform_viewer?).to be true
+      expect(p.no_platform?).to be false
+    end
+
+    it 'admin satisfies admin and below, but not owner' do
+      p = with_role('admin')
+      expect(p.platform_owner?).to be false
+      expect(p.platform_admin?).to be true
+      expect(p.platform_member?).to be true
+      expect(p.platform_viewer?).to be true
+      expect(p.no_platform?).to be false
+    end
+
+    it 'member satisfies member and viewer, but not admin' do
+      p = with_role('member')
+      expect(p.platform_admin?).to be false
+      expect(p.platform_member?).to be true
+      expect(p.platform_viewer?).to be true
+      expect(p.no_platform?).to be false
+    end
+
+    it 'viewer satisfies only viewer' do
+      p = with_role('viewer')
+      expect(p.platform_member?).to be false
+      expect(p.platform_viewer?).to be true
+      expect(p.no_platform?).to be false
+    end
+
+    it 'none satisfies nothing' do
+      p = with_role('none')
+      expect(p.platform_owner?).to be false
+      expect(p.platform_admin?).to be false
+      expect(p.platform_member?).to be false
+      expect(p.platform_viewer?).to be false
+      expect(p.no_platform?).to be true
+    end
+
+    it 'treats a missing platform_role claim as no platform access' do
+      p = with_role(nil)
+      expect(p.platform_role).to be_nil
+      expect(p.platform_viewer?).to be false
+      expect(p.no_platform?).to be true
+    end
+
+    it 'treats an empty platform_role claim as no platform access' do
+      p = with_role('')
+      expect(p.platform_viewer?).to be false
+      expect(p.no_platform?).to be true
+    end
+  end
+
   describe '#expired?' do
     it 'returns false for valid tokens' do
       expect(passport.expired?).to be false
@@ -207,6 +264,7 @@ RSpec.describe Idp::JWT::Passport do
 
     it 'raises NotAUserToken when user-only accessors are called' do
       expect { service_passport.email }.to raise_error(Idp::JWT::NotAUserToken, /service token/)
+      expect { service_passport.platform_role }.to raise_error(Idp::JWT::NotAUserToken)
       expect { service_passport.platform_admin? }.to raise_error(Idp::JWT::NotAUserToken)
       expect { service_passport.user_uuid }.to raise_error(Idp::JWT::NotAUserToken)
     end

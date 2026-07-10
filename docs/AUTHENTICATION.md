@@ -32,8 +32,12 @@ passport.created_at         # Unix seconds integer
 passport.confirmed_at       # Unix seconds integer or nil
 passport.email_verified?
 passport.mfa_verified?
-passport.platform_admin?
-passport.platform_admin_root?
+passport.platform_role      # "owner" | "admin" | "member" | "viewer" | "none"
+passport.platform_owner?
+passport.platform_admin?    # at least admin
+passport.platform_member?   # at least member
+passport.platform_viewer?   # at least viewer
+passport.no_platform?
 passport.user_status
 passport.terms_version
 

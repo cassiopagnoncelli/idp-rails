@@ -10,7 +10,8 @@ module Idp
     #   passport.user_uuid        # => "usr_a1b2c3d4"
     #   passport.email_verified?  # => true
     #   passport.mfa_verified?    # => true
-    #   passport.platform_admin?  # => false
+    #   passport.platform_role    # => "member"
+    #   passport.platform_member? # => true
     class Passport
       attr_reader :claims
 
@@ -81,8 +82,8 @@ module Idp
       # --- User profile ---
       #
       # These accessors raise NotAUserToken for service tokens — service
-      # callers don't have an email, MFA status, or admin role. Branch on
-      # #service? / #user? before reading user fields.
+      # callers don't have an email, MFA status, or platform role. Branch
+      # on #service? / #user? before reading user fields.
 
       def email
         require_user_claims!(:email)
@@ -132,14 +133,35 @@ module Idp
         user_claims[:mfa_verified] == true
       end
 
-      def platform_admin?
-        require_user_claims!(:platform_admin?)
-        user_claims[:platform_admin] == true
+      # Platform-wide role claim, ranked owner > admin > member > viewer
+      # > none. The tiered predicates below are "at least" checks —
+      # platform_admin? is true for owners too.
+      def platform_role
+        require_user_claims!(:platform_role)
+        user_claims[:platform_role]
       end
 
-      def platform_admin_root?
-        require_user_claims!(:platform_admin_root?)
-        user_claims[:platform_admin_root] == true
+      def platform_owner?
+        platform_role == "owner"
+      end
+
+      # At least admin (owner or admin).
+      def platform_admin?
+        %w[owner admin].include?(platform_role)
+      end
+
+      # At least member (owner, admin, or member).
+      def platform_member?
+        %w[owner admin member].include?(platform_role)
+      end
+
+      # At least viewer (any role but none).
+      def platform_viewer?
+        %w[owner admin member viewer].include?(platform_role)
+      end
+
+      def no_platform?
+        [ nil, "", "none" ].include?(platform_role)
       end
 
       def user_status

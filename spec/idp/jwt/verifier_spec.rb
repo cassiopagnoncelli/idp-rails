@@ -17,8 +17,7 @@ RSpec.describe Idp::JWT::Verifier do
       user: {
         email: 'alice@example.com',
         name: 'Alice',
-        platform_admin: false,
-        platform_admin_root: false,
+        platform_role: 'none',
         mfa_verified: true
       }
     }

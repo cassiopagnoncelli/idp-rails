@@ -144,7 +144,15 @@ passport.confirmed_at       # => 1711800000
 # Security
 passport.email_verified?    # => true
 passport.mfa_verified?      # => true
-passport.platform_admin?    # => false
+
+# Platform role (ranked owner > admin > member > viewer > none);
+# predicates are "at least" checks over that ranking.
+passport.platform_role      # => "member"
+passport.platform_owner?    # => false
+passport.platform_admin?    # => false  (owner or admin)
+passport.platform_member?   # => true   (owner, admin, or member)
+passport.platform_viewer?   # => true   (any role but none)
+passport.no_platform?       # => false
 
 # Token metadata
 passport.issuer             # => "https://account.yourcompany.com"
@@ -177,8 +185,7 @@ Access tokens are ES256-signed JWTs with the following claims:
     "phone_number": "+5511999999999",
     "created_at": 1711700000,
     "confirmed_at": 1711800000,
-    "platform_admin": false,
-    "platform_admin_root": false,
+    "platform_role": "member",
     "mfa_verified": true
   }
 }
@@ -188,6 +195,7 @@ Access tokens are ES256-signed JWTs with the following claims:
 - `user.time_zone` and `user.phone_number` carry identity profile fields from Idp.
 - `user.created_at` and `user.confirmed_at` are Unix timestamps in seconds (`confirmed_at` can be `null`).
 - `user.mfa_verified` indicates whether the user completed 2FA during this session. Use this to gate sensitive operations.
+- `user.platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks.
 
 ## Real-time revocation
 
@@ -261,7 +269,7 @@ module IdpJwtHelper
       iat: Time.now.to_i,
       exp: (Time.now + 900).to_i,
       jti: "tok_test",
-      user: { email: "test@example.com", name: "Test", platform_admin: false, mfa_verified: true }
+      user: { email: "test@example.com", name: "Test", platform_role: "none", mfa_verified: true }
     }.merge(overrides)
 
     token = JWT.encode(payload, KEY, "ES256", { kid: "test_key" })
