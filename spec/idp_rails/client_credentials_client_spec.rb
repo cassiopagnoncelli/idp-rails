@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Idp::JWT::ClientCredentialsClient do
+RSpec.describe IdpRails::ClientCredentialsClient do
   let(:token_url) { 'https://account.test/oauth/token' }
   let(:client) do
     described_class.new(
@@ -72,7 +72,7 @@ RSpec.describe Idp::JWT::ClientCredentialsClient do
         headers: { 'Content-Type' => 'application/json' }
       )
 
-    expect { client.token }.to raise_error(Idp::JWT::ClientCredentialsError) do |err|
+    expect { client.token }.to raise_error(IdpRails::ClientCredentialsError) do |err|
       expect(err.status).to eq(401)
       expect(err.code).to eq('unauthorized_client')
       expect(err.message).to include('not allowed')
@@ -83,7 +83,7 @@ RSpec.describe Idp::JWT::ClientCredentialsClient do
     stub_request(:post, token_url)
       .to_return(status: 200, body: '{}', headers: { 'Content-Type' => 'application/json' })
 
-    expect { client.token }.to raise_error(Idp::JWT::ClientCredentialsError, /missing access_token/)
+    expect { client.token }.to raise_error(IdpRails::ClientCredentialsError, /missing access_token/)
   end
 
   def travel_to_future(seconds:)

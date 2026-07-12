@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Idp::JWT::Verifier do
+RSpec.describe IdpRails::Verifier do
   let(:key_pair) { TestKeys.generate }
 
   let(:jwks_response) do
@@ -33,7 +33,7 @@ RSpec.describe Idp::JWT::Verifier do
       token = TestKeys.sign_token(valid_payload, key_pair)
       passport = described_class.new.verify!(token)
 
-      expect(passport).to be_a(Idp::JWT::Passport)
+      expect(passport).to be_a(IdpRails::Passport)
       expect(passport.user_uuid).to eq('usr_abc123')
     end
 
@@ -49,7 +49,7 @@ RSpec.describe Idp::JWT::Verifier do
       token = TestKeys.sign_token(payload, key_pair)
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(Idp::JWT::ExpiredTokenError)
+        .to raise_error(IdpRails::ExpiredTokenError)
     end
 
     it 'raises InvalidIssuerError for wrong issuer' do
@@ -57,7 +57,7 @@ RSpec.describe Idp::JWT::Verifier do
       token = TestKeys.sign_token(payload, key_pair)
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(Idp::JWT::InvalidIssuerError)
+        .to raise_error(IdpRails::InvalidIssuerError)
     end
 
     it 'raises InvalidSignatureError for unknown kid' do
@@ -66,7 +66,7 @@ RSpec.describe Idp::JWT::Verifier do
       token = JWT.encode(valid_payload, other_key.private_key, 'ES256', { kid: 'unknown_key' })
 
       expect { described_class.new.verify!(token) }
-        .to raise_error(Idp::JWT::InvalidSignatureError, /Unknown signing key/)
+        .to raise_error(IdpRails::InvalidSignatureError, /Unknown signing key/)
     end
 
     it 'raises VerificationError for tampered tokens' do
@@ -76,12 +76,12 @@ RSpec.describe Idp::JWT::Verifier do
       tampered = parts.join('.')
 
       expect { described_class.new.verify!(tampered) }
-        .to raise_error(Idp::JWT::VerificationError)
+        .to raise_error(IdpRails::VerificationError)
     end
   end
 
   describe 'revocation checking' do
-    let(:subscriber) { Idp::JWT::RevocationSubscriber.new }
+    let(:subscriber) { IdpRails::RevocationSubscriber.new }
 
     it 'rejects revoked users' do
       subscriber.block!('usr_abc123')
@@ -90,7 +90,7 @@ RSpec.describe Idp::JWT::Verifier do
       verifier = described_class.new(revocation_subscriber: subscriber)
 
       expect { verifier.verify!(token) }
-        .to raise_error(Idp::JWT::RevokedTokenError)
+        .to raise_error(IdpRails::RevokedTokenError)
     end
 
     it 'passes non-revoked users' do

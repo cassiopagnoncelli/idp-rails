@@ -2,7 +2,7 @@
 
 require "redis"
 
-RSpec.describe Idp::JWT::JwksClient do
+RSpec.describe IdpRails::JwksClient do
   subject(:client) { described_class.new(config) }
 
   let(:key_pair) { TestKeys.generate }
@@ -11,7 +11,7 @@ RSpec.describe Idp::JWT::JwksClient do
     { keys: [ key_pair.jwk ] }.to_json
   end
 
-  let(:config) { Idp::JWT.configuration }
+  let(:config) { IdpRails.configuration }
 
   before do
     stub_request(:get, 'https://account.test/.well-known/jwks.json')
@@ -51,7 +51,7 @@ RSpec.describe Idp::JWT::JwksClient do
       client.public_key(key_pair.kid) # load cache
 
       expect { client.public_key('nonexistent') }
-        .to raise_error(Idp::JWT::InvalidSignatureError, /Unknown signing key/)
+        .to raise_error(IdpRails::InvalidSignatureError, /Unknown signing key/)
     end
   end
 
@@ -72,14 +72,14 @@ RSpec.describe Idp::JWT::JwksClient do
 
       client.clear!
       expect { client.public_key('any') }
-        .to raise_error(Idp::JWT::Error, /JWKS fetch failed/)
+        .to raise_error(IdpRails::Error, /JWKS fetch failed/)
     end
   end
 
   context 'with Redis cache' do
     let(:redis) { instance_double(Redis) }
     let(:config) do
-      Idp::JWT.configuration.tap { |c| c.cache_redis = redis }
+      IdpRails.configuration.tap { |c| c.cache_redis = redis }
     end
 
     describe 'L2 cache hit' do
@@ -205,7 +205,7 @@ RSpec.describe Idp::JWT::JwksClient do
   context 'with Redis cache and namespace' do
     let(:redis) { instance_double(Redis) }
     let(:config) do
-      Idp::JWT.configuration.tap do |c|
+      IdpRails.configuration.tap do |c|
         c.cache_redis = redis
         c.cache_redis_namespace = 'idp_sessions_crm'
       end

@@ -1,3 +1,3 @@
 # frozen_string_literal: true
 
-require_relative "idp/jwt"
+require_relative "idp_rails"

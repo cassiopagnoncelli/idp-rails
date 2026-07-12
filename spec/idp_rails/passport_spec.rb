@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe Idp::JWT::Passport do
+RSpec.describe IdpRails::Passport do
   subject(:passport) { described_class.new(claims) }
 
   let(:claims) do
@@ -263,10 +263,10 @@ RSpec.describe Idp::JWT::Passport do
     end
 
     it 'raises NotAUserToken when user-only accessors are called' do
-      expect { service_passport.email }.to raise_error(Idp::JWT::NotAUserToken, /service token/)
-      expect { service_passport.platform_role }.to raise_error(Idp::JWT::NotAUserToken)
-      expect { service_passport.platform_admin? }.to raise_error(Idp::JWT::NotAUserToken)
-      expect { service_passport.user_uuid }.to raise_error(Idp::JWT::NotAUserToken)
+      expect { service_passport.email }.to raise_error(IdpRails::NotAUserToken, /service token/)
+      expect { service_passport.platform_role }.to raise_error(IdpRails::NotAUserToken)
+      expect { service_passport.platform_admin? }.to raise_error(IdpRails::NotAUserToken)
+      expect { service_passport.user_uuid }.to raise_error(IdpRails::NotAUserToken)
     end
 
     it 'still exposes subject (without raising) for diagnostic logging' do

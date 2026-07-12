@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name          = 'idp-jwt'
+  spec.name          = 'idp-rails'
   spec.version       = '0.1.0'
   spec.authors       = [ 'Idp Team' ]
   spec.summary       = 'JWT verification client for Idp identity provider'

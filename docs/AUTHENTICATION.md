@@ -1,12 +1,12 @@
-# idp-jwt (Ruby gem)
+# idp-rails (Ruby gem)
 
 Shared Ruby gem for sister apps to verify JWT passports issued by Idp. Handles JWKS fetching/caching, ES256 signature verification, and claim validation.
 
 ## Usage
 
 ```ruby
-passport = Idp::JWT.verify(token)   # returns Passport or nil
-passport = Idp::JWT.verify!(token)  # raises on invalid token
+passport = IdpRails.verify(token)   # returns Passport or nil
+passport = IdpRails.verify!(token)  # raises on invalid token
 ```
 
 ## Passport accessors

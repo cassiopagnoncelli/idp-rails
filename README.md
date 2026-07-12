@@ -1,4 +1,4 @@
-# idp-jwt
+# idp-rails
 
 JWT verification client for sister apps authenticating against the Idp identity provider.
 
@@ -9,14 +9,14 @@ Handles JWKS fetching/caching, ES256 signature verification, claim validation, a
 Add to your Gemfile:
 
 ```ruby
-gem "idp-jwt", path: "../idp/gems/idp-jwt"
+gem "idp-rails", path: "../idp/gems/idp-rails"
 ```
 
 For Rails apps, require the Rails integration instead of the base library:
 
 ```ruby
 # config/application.rb or an initializer
-require "idp/jwt/rails"
+require "idp_rails/rails"
 ```
 
 The Railtie auto-configures from environment variables (`IDP_JWKS_URL`, `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
@@ -24,7 +24,7 @@ The Railtie auto-configures from environment variables (`IDP_JWKS_URL`, `IDP_JWT
 ## Configuration
 
 ```ruby
-Idp::JWT.configure do |c|
+IdpRails.configure do |c|
   # Required: the Idp JWKS endpoint.
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
 
@@ -67,7 +67,7 @@ Include the controller concern and call `authenticate!`:
 
 ```ruby
 class ApplicationController < ActionController::API
-  include Idp::JWT::Rails::ControllerConcern
+  include IdpRails::Rails::ControllerConcern
 
   before_action :authenticate!
 end
@@ -110,26 +110,26 @@ All authentication errors return JSON:
 ## Usage without Rails
 
 ```ruby
-require "idp-jwt"
+require "idp-rails"
 
-Idp::JWT.configure do |c|
+IdpRails.configure do |c|
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
   c.issuer   = "https://account.yourcompany.com"
 end
 
-# Returns a Passport or raises Idp::JWT::VerificationError
-passport = Idp::JWT.verify!(token)
+# Returns a Passport or raises IdpRails::VerificationError
+passport = IdpRails.verify!(token)
 
 # Returns a Passport or nil
-passport = Idp::JWT.verify(token)
+passport = IdpRails.verify(token)
 ```
 
 ## The Passport object
 
-`Idp::JWT.verify!` returns a `Passport` with typed accessors for all token claims:
+`IdpRails.verify!` returns a `Passport` with typed accessors for all token claims:
 
 ```ruby
-passport = Idp::JWT.verify!(token)
+passport = IdpRails.verify!(token)
 
 # Identity
 passport.user_uuid          # => "usr_a1b2c3d4"
@@ -209,7 +209,7 @@ Idp publishes to this channel when:
 If a sister app misses an event (restart, Redis blip), the access token still expires naturally within 15 minutes. This is a best-effort acceleration layer, not a hard guarantee.
 
 ```ruby
-Idp::JWT.configure do |c|
+IdpRails.configure do |c|
   c.redis = ENV["REDIS_URL"]   # enables the subscriber
   # c.redis = { host: "redis.internal", port: 6379 }  # also works
   # c.redis = Redis.new(...)  # or pass an instance
@@ -221,12 +221,12 @@ The Railtie starts the subscriber automatically on boot and stops it on shutdown
 Without Rails, manage it manually:
 
 ```ruby
-subscriber = Idp::JWT::RevocationSubscriber.new
+subscriber = IdpRails::RevocationSubscriber.new
 subscriber.start   # spawns a background thread
 subscriber.stop    # clean shutdown
 
 # Wire it into the verifier
-verifier = Idp::JWT::Verifier.new(revocation_subscriber: subscriber)
+verifier = IdpRails::Verifier.new(revocation_subscriber: subscriber)
 passport = verifier.verify!(token)
 ```
 
@@ -241,16 +241,16 @@ The JWKS client handles key rotation automatically:
 
 ## Exceptions
 
-All exceptions inherit from `Idp::JWT::Error`:
+All exceptions inherit from `IdpRails::Error`:
 
 ```
-Idp::JWT::Error
-  Idp::JWT::VerificationError
-    Idp::JWT::ExpiredTokenError
-    Idp::JWT::InvalidSignatureError
-    Idp::JWT::InvalidIssuerError
-    Idp::JWT::InvalidAudienceError
-    Idp::JWT::RevokedTokenError
+IdpRails::Error
+  IdpRails::VerificationError
+    IdpRails::ExpiredTokenError
+    IdpRails::InvalidSignatureError
+    IdpRails::InvalidIssuerError
+    IdpRails::InvalidAudienceError
+    IdpRails::RevokedTokenError
 ```
 
 ## Testing
@@ -258,8 +258,8 @@ Idp::JWT::Error
 In your test suite, you can build tokens directly without a running Idp instance:
 
 ```ruby
-# spec/support/idp_jwt.rb
-module IdpJwtHelper
+# spec/support/idp_rails.rb
+module IdpRailsHelper
   KEY = OpenSSL::PKey::EC.generate("prime256v1")
 
   def build_test_passport(overrides = {})
@@ -274,13 +274,13 @@ module IdpJwtHelper
 
     token = JWT.encode(payload, KEY, "ES256", { kid: "test_key" })
     # Stub verification to skip JWKS fetch
-    allow(Idp::JWT).to receive(:verify!).and_return(Idp::JWT::Passport.new(payload))
+    allow(IdpRails).to receive(:verify!).and_return(IdpRails::Passport.new(payload))
     token
   end
 end
 
 RSpec.configure do |config|
-  config.include IdpJwtHelper, type: :request
+  config.include IdpRailsHelper, type: :request
 end
 ```
 
