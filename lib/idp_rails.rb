@@ -12,6 +12,7 @@ require_relative "idp_rails/passport"
 require_relative "idp_rails/verifier"
 require_relative "idp_rails/revocation_subscriber"
 require_relative "idp_rails/client_credentials_client"
+require_relative "idp_rails/token_refresher"
 require_relative "idp_rails/user_agent"
 
 module IdpRails
