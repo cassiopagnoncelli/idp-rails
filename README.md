@@ -143,7 +143,13 @@ passport.confirmed_at       # => 1711800000
 
 # Security
 passport.email_verified?    # => true
-passport.mfa_verified?      # => true
+passport.mfa_verified?      # => true   (amr-derived on conformant tokens)
+
+# Session & authentication context (conformant tokens; ADR-0001)
+passport.sid                # => "sid_9f8e7d"
+passport.amr                # => ["pwd", "otp", "mfa"]  (RFC 8176; [] when absent)
+passport.acr                # => "aal2"
+passport.auth_time          # => 2026-03-30 11:58:00 UTC
 
 # Platform role (ranked owner > admin > member > viewer > none);
 # predicates are "at least" checks over that ranking.
@@ -167,35 +173,35 @@ passport.to_h               # => { iss: "...", sub: "...", ... }
 
 ## Token structure
 
-Access tokens are ES256-signed JWTs with the following claims:
+Access tokens are ES256-signed JWTs. The Passport reads **both** shapes (ADR-0001 in idp) transparently — prefer its accessors over raw claims.
+
+Conformant shape (OIDC / RFC 9068, header `typ: "at+jwt"`):
 
 ```json
 {
   "iss": "https://account.yourcompany.com",
   "sub": "usr_a1b2c3d4",
+  "aud": "https://account.yourcompany.com",
+  "client_id": "crm_web",
   "iat": 1711800000,
   "exp": 1711800900,
   "jti": "tok_f9e8d7c6b5a4",
-  "user": {
-    "email": "alice@example.com",
-    "name": "Alice",
-    "email_verified": true,
-    "locale": "pt-BR",
-    "time_zone": "America/Sao_Paulo",
-    "phone_number": "+5511999999999",
-    "created_at": 1711700000,
-    "confirmed_at": 1711800000,
-    "platform_role": "member",
-    "mfa_verified": true
-  }
+  "sid": "sid_9f8e7d",
+  "scope": "openid profile email",
+  "auth_time": 1711799000,
+  "amr": ["pwd", "otp", "mfa"],
+  "acr": "aal2",
+  "platform_role": "member",
+  "status": "active"
 }
 ```
 
-- `user.email_verified` indicates whether the user's email address has been verified.
-- `user.time_zone` and `user.phone_number` carry identity profile fields from Idp.
-- `user.created_at` and `user.confirmed_at` are Unix timestamps in seconds (`confirmed_at` can be `null`).
-- `user.mfa_verified` indicates whether the user completed 2FA during this session. Use this to gate sensitive operations.
-- `user.platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks.
+Legacy shape (being phased out): the same top-level `iss/sub/iat/exp/jti` plus a nested `user` envelope carrying `email`, `name`, `email_verified`, `locale`, `time_zone`, `phone_number`, `created_at`, `confirmed_at`, `platform_role`, `mfa_verified`, `status`.
+
+- Profile fields (`email`, `name`, `locale`, `time_zone`, `phone_number`) exist only on legacy tokens — conformant access tokens carry authorization data only, and the accessors return `nil`. Re-source profile data from the ID token or the userinfo endpoint.
+- `mfa_verified?` derives from `amr` containing `"mfa"` on conformant tokens and falls back to the legacy `user.mfa_verified` boolean. Use it to gate sensitive operations.
+- `platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks.
+- `amr` lists RFC 8176 authentication method references; `acr` is `"aal1"`/`"aal2"`; `auth_time` is the authentication event; `sid` is the SSO session id.
 
 ## Real-time revocation
 

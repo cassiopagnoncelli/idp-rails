@@ -289,4 +289,147 @@ RSpec.describe IdpRails::Passport do
       expect(passport.has_scope?('users:lookup')).to be false
     end
   end
+
+  describe 'session & authentication context on legacy passports' do
+    it 'returns empty amr and nil acr/auth_time/sid when absent' do
+      expect(passport.amr).to eq([])
+      expect(passport.acr).to be_nil
+      expect(passport.auth_time).to be_nil
+      expect(passport.sid).to be_nil
+    end
+
+    it 'falls back to the legacy mfa_verified boolean when amr is absent' do
+      expect(passport.mfa_verified?).to be true
+
+      legacy_false = described_class.new(claims.merge(user: claims[:user].merge(mfa_verified: false)))
+      expect(legacy_false.mfa_verified?).to be false
+    end
+  end
+
+  describe 'conformant (flat) passports — ADR-0001 shape' do
+    let(:flat_claims) do
+      {
+        iss: 'https://account.test',
+        sub: 'usr_abc123',
+        aud: 'https://account.test',
+        client_id: 'crm_web',
+        iat: Time.now.to_i,
+        exp: (Time.now + 900).to_i,
+        jti: 'tok_flat1',
+        sid: 'sid_9f8e7d',
+        scope: 'openid profile email',
+        auth_time: 1_712_000_000,
+        amr: %w[pwd otp mfa],
+        acr: 'aal2',
+        platform_role: 'admin',
+        status: 'active'
+      }
+    end
+    subject(:flat) { described_class.new(flat_claims) }
+
+    it 'is a user token' do
+      expect(flat.user?).to be true
+      expect(flat.user_uuid).to eq('usr_abc123')
+    end
+
+    it 'reads platform_role from the top level, with working tier predicates' do
+      expect(flat.platform_role).to eq('admin')
+      expect(flat.platform_admin?).to be true
+      expect(flat.platform_owner?).to be false
+      expect(flat.platform_viewer?).to be true
+      expect(flat.no_platform?).to be false
+    end
+
+    it 'reads user_status from the top level' do
+      expect(flat.user_status).to eq('active')
+    end
+
+    it 'derives mfa_verified? from amr' do
+      expect(flat.mfa_verified?).to be true
+
+      single_factor = described_class.new(flat_claims.merge(amr: %w[pwd]))
+      expect(single_factor.mfa_verified?).to be false
+    end
+
+    it 'exposes amr, acr, auth_time, and sid' do
+      expect(flat.amr).to eq(%w[pwd otp mfa])
+      expect(flat.acr).to eq('aal2')
+      expect(flat.auth_time).to eq(Time.at(1_712_000_000))
+      expect(flat.sid).to eq('sid_9f8e7d')
+    end
+
+    it 'reads time_zone from the flat zoneinfo claim' do
+      zoned = described_class.new(flat_claims.merge(zoneinfo: 'America/Sao_Paulo'))
+      expect(zoned.time_zone).to eq('America/Sao_Paulo')
+    end
+
+    it 'reads email_verified? from the top level (ID-token/userinfo payloads)' do
+      verified = described_class.new(flat_claims.merge(email_verified: true))
+      expect(verified.email_verified?).to be true
+      expect(flat.email_verified?).to be false
+    end
+
+    it 'returns nil rather than raising for profile fields that left the access token' do
+      expect(flat.email).to be_nil
+      expect(flat.name).to be_nil
+      expect(flat.locale).to be_nil
+      expect(flat.time_zone).to be_nil
+      expect(flat.phone_number).to be_nil
+    end
+
+    it 'returns nil for envelope-only claims dropped from conformant tokens' do
+      expect(flat.created_at).to be_nil
+      expect(flat.confirmed_at).to be_nil
+      expect(flat.terms_version).to be_nil
+    end
+
+    it 'exposes the granted scope' do
+      expect(flat.scopes).to eq(%w[openid profile email])
+    end
+  end
+
+  describe 'dual-emit window (flat claims + legacy mfa_verified)' do
+    it 'prefers amr over the legacy boolean when both are present' do
+      dual = described_class.new(
+        iss: 'https://account.test', sub: 'usr_abc123',
+        exp: (Time.now + 900).to_i,
+        amr: %w[pwd], platform_role: 'member',
+        user: { mfa_verified: true }
+      )
+      expect(dual.mfa_verified?).to be false
+    end
+
+    it 'still prefers envelope profile values over flat ones while both exist' do
+      mixed = described_class.new(
+        iss: 'https://account.test', sub: 'usr_abc123',
+        exp: (Time.now + 900).to_i,
+        platform_role: 'viewer', status: 'suspended',
+        user: { platform_role: 'admin', status: 'active' }
+      )
+      expect(mixed.platform_role).to eq('admin')
+      expect(mixed.user_status).to eq('active')
+    end
+  end
+
+  describe 'service tokens and the new accessors' do
+    let(:service_passport) do
+      described_class.new(
+        iss: 'https://account.test', sub: 'crm_service', jti: 'svc_1',
+        exp: (Time.now + 900).to_i, client_id: 'crm_service', token_use: 'client'
+      )
+    end
+
+    it 'does not raise for session/authn context (returns empty values)' do
+      expect(service_passport.sid).to be_nil
+      expect(service_passport.amr).to eq([])
+      expect(service_passport.acr).to be_nil
+      expect(service_passport.auth_time).to be_nil
+    end
+
+    it 'still raises NotAUserToken for user-only accessors on the flat shape' do
+      expect { service_passport.mfa_verified? }.to raise_error(IdpRails::NotAUserToken)
+      expect { service_passport.user_status }.to raise_error(IdpRails::NotAUserToken)
+      expect { service_passport.terms_version }.to raise_error(IdpRails::NotAUserToken)
+    end
+  end
 end
