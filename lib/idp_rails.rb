@@ -21,6 +21,7 @@ module IdpRails
   class ExpiredTokenError < VerificationError; end
   class InvalidSignatureError < VerificationError; end
   class InvalidIssuerError < VerificationError; end
+  class InvalidAudienceError < VerificationError; end
   class RevokedTokenError < VerificationError; end
   # Raised when a user-only accessor (e.g. #email) is called on a
   # service token. Not a VerificationError — the token is valid; the

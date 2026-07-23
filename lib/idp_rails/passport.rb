@@ -1,16 +1,15 @@
 # frozen_string_literal: true
 
 module IdpRails
-  # A decoded and verified JWT passport. Provides typed accessors
-  # for all standard claims issued by Idp.
+  # A decoded and verified JWT passport. Provides typed accessors for the
+  # conformant OIDC / RFC 9068 claims idp issues (ADR-0001): flat top-level
+  # authorization data — platform_role, status, scope, amr/acr/auth_time,
+  # sid. Access tokens carry no profile fields; the profile accessors below
+  # yield values only when this class wraps an OIDC payload that has them
+  # (an ID token or userinfo body) and return nil otherwise. Re-source
+  # profile data from the ID token or userinfo, not the access token.
   #
-  # Reads both passport generations (ADR-0001 in idp): the legacy shape
-  # nests profile claims in a `user` envelope; the conformant OIDC /
-  # RFC 9068 shape carries flat top-level claims (and drops profile
-  # fields from access tokens entirely — re-source those from the ID
-  # token or userinfo). Accessors prefer the envelope while it exists
-  # and fall back to the flat claim, so callers stay agnostic across
-  # the migration window.
+  # (2.x also read a legacy nested `user` envelope; that shape is retired.)
   #
   # @example
   #   passport = IdpRails.verify!(token)
@@ -94,8 +93,8 @@ module IdpRails
     end
 
     # Authentication method references (RFC 8176) for the sign-in the
-    # grant was born from, e.g. ["pwd", "otp", "mfa"]. Empty on tokens
-    # that predate amr stamping.
+    # grant was born from, e.g. ["pwd", "otp", "mfa"]. Empty when the
+    # grant's context is unknown.
     def amr
       Array(claims[:amr]).map(&:to_s)
     end
@@ -112,66 +111,61 @@ module IdpRails
 
     # --- User profile ---
     #
-    # These accessors raise NotAUserToken for service tokens — service
-    # callers don't have an email, MFA status, or platform role. Branch
-    # on #service? / #user? before reading user fields.
-    #
-    # Conformant access tokens no longer carry profile fields (email,
-    # name, locale, zoneinfo, phone_number): these return nil there and
-    # the data comes from the ID token or userinfo instead.
+    # These accessors raise NotAUserToken for service tokens. Access
+    # tokens carry no profile fields (they return nil there) — the values
+    # come through only when wrapping an ID-token/userinfo payload.
 
     def email
       require_user_token!(:email)
-      profile_claim(:email)
+      claims[:email]
     end
 
     def name
       require_user_token!(:name)
-      profile_claim(:name)
+      claims[:name]
     end
 
     def locale
       require_user_token!(:locale)
-      profile_claim(:locale)
+      claims[:locale]
     end
 
-    # Legacy envelope key is time_zone; the flat OIDC claim is zoneinfo.
+    # The OIDC zoneinfo claim: an IANA tz name, absent when the user has
+    # no stored preference ("Auto-detect").
     def time_zone
       require_user_token!(:time_zone)
-      profile_claim(:time_zone, flat: :zoneinfo)
+      claims[:zoneinfo]
     end
 
     def phone_number
       require_user_token!(:phone_number)
-      user_claims[:phone_number] || user_claims[:mobile] || claims[:phone_number]
+      claims[:phone_number]
     end
 
-    # Legacy-envelope-only: conformant tokens dropped this claim.
+    # Retired (ADR-0001): tokens carry no profile timestamps. Kept for
+    # 2.x API compatibility; always nil.
     def created_at
       require_user_token!(:created_at)
-      user_claims[:created_at]
+      nil
     end
 
-    # Legacy-envelope-only: conformant tokens dropped this claim —
-    # #email_verified? asserts the fact the timestamp used to prove.
+    # Retired (ADR-0001): #email_verified? asserts the fact the timestamp
+    # used to prove. Kept for 2.x API compatibility; always nil.
     def confirmed_at
       require_user_token!(:confirmed_at)
-      user_claims[:confirmed_at]
+      nil
     end
 
     def email_verified?
       require_user_token!(:email_verified?)
-      truthy_claim?(profile_claim(:email_verified))
+      truthy_claim?(claims[:email_verified])
     end
 
-    # Whether the sign-in behind this grant verified a second factor.
-    # Conformant tokens assert it via amr (RFC 8176); legacy tokens via
-    # the user.mfa_verified boolean.
+    # Whether the sign-in behind this grant verified a second factor
+    # (amr contains "mfa", RFC 8176).
     def mfa_verified?
       require_user_token!(:mfa_verified?)
-      return amr.include?("mfa") if claims.key?(:amr)
-
-      user_claims[:mfa_verified] == true
+      amr.include?("mfa")
     end
 
     # Platform-wide role claim, ranked owner > admin > member > viewer
@@ -179,7 +173,7 @@ module IdpRails
     # platform_admin? is true for owners too.
     def platform_role
       require_user_token!(:platform_role)
-      profile_claim(:platform_role)
+      claims[:platform_role]
     end
 
     def platform_owner?
@@ -207,13 +201,14 @@ module IdpRails
 
     def user_status
       require_user_token!(:user_status)
-      profile_claim(:status)
+      claims[:status]
     end
 
-    # Legacy-envelope-only: conformant tokens dropped terms data.
+    # Retired (ADR-0001): terms left the token contract entirely. Kept
+    # for 2.x API compatibility; always nil.
     def terms_version
       require_user_token!(:terms_version)
-      user_claims[:terms_version]
+      nil
     end
 
     # --- Helpers ---
@@ -236,18 +231,6 @@ module IdpRails
     end
 
     private
-
-    def user_claims
-      claims[:user] || {}
-    end
-
-    # Prefer the legacy envelope value while it exists; fall back to the
-    # flat top-level claim of the conformant shape. A present-but-false
-    # envelope value wins (nil is the only pass-through).
-    def profile_claim(nested_key, flat: nested_key)
-      value = user_claims[nested_key]
-      value.nil? ? claims[flat] : value
-    end
 
     def require_user_token!(method_name)
       return unless service?

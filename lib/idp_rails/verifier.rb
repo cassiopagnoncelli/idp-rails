@@ -23,10 +23,17 @@ module IdpRails
       kid = header["kid"]
       raise InvalidSignatureError, "Token missing kid header" unless kid
 
+      # RFC 9068 §4: resource servers reject tokens that are not access
+      # tokens. ID tokens and foreign JWTs die here regardless of signature.
+      unless header["typ"] == "at+jwt"
+        raise VerificationError, "Not an access token (typ=#{header["typ"].inspect})"
+      end
+
       # Fetch the public key for this kid.
       public_key = @jwks_client.public_key(kid)
 
-      # Decode and verify signature + standard claims.
+      # Decode and verify signature + standard claims, including the
+      # platform audience (one logical audience for all resource servers).
       payload, = ::JWT.decode(
         raw_token,
         public_key,
@@ -35,6 +42,8 @@ module IdpRails
           algorithm: "ES256",
           iss: @config.issuer,
           verify_iss: true,
+          aud: @config.audience,
+          verify_aud: true,
           leeway: @config.clock_skew
         }
       )
@@ -49,6 +58,8 @@ module IdpRails
       raise ExpiredTokenError, "Access token has expired"
     rescue ::JWT::InvalidIssuerError
       raise InvalidIssuerError, "Invalid token issuer"
+    rescue ::JWT::InvalidAudError
+      raise InvalidAudienceError, "Invalid token audience"
     rescue ::JWT::DecodeError => e
       raise VerificationError, "Token verification failed: #{e.message}"
     end

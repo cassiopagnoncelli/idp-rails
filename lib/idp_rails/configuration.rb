@@ -12,6 +12,16 @@ module IdpRails
     # @return [String]
     attr_accessor :issuer
 
+    # Expected audience claim (aud) — idp's single logical platform
+    # audience (ADR-0001), which defaults to the issuer string on both
+    # sides. Set explicitly only when idp runs with a custom JWT_AUDIENCE.
+    # @return [String]
+    attr_writer :audience
+
+    def audience
+      @audience || issuer
+    end
+
     # JWKS cache TTL in seconds. Keys are refreshed in the background after this period.
     # @return [Integer]
     attr_accessor :jwks_cache_ttl

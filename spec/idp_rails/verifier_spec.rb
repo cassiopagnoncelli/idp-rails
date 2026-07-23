@@ -11,15 +11,14 @@ RSpec.describe IdpRails::Verifier do
     {
       iss: 'https://account.test',
       sub: 'usr_abc123',
+      aud: 'https://account.test',
       iat: Time.now.to_i,
       exp: (Time.now + 900).to_i,
       jti: 'tok_xyz789',
-      user: {
-        email: 'alice@example.com',
-        name: 'Alice',
-        platform_role: 'none',
-        mfa_verified: true
-      }
+      amr: %w[pwd otp mfa],
+      acr: 'aal2',
+      platform_role: 'none',
+      status: 'active'
     }
   end
 
@@ -63,10 +62,33 @@ RSpec.describe IdpRails::Verifier do
     it 'raises InvalidSignatureError for unknown kid' do
       other_key = TestKeys.generate
       # Sign with a key that's not in the JWKS
-      token = JWT.encode(valid_payload, other_key.private_key, 'ES256', { kid: 'unknown_key' })
+      token = JWT.encode(valid_payload, other_key.private_key, 'ES256', { kid: 'unknown_key', typ: 'at+jwt' })
 
       expect { described_class.new.verify!(token) }
         .to raise_error(IdpRails::InvalidSignatureError, /Unknown signing key/)
+    end
+
+    it 'rejects tokens without the at+jwt header type (e.g. ID tokens)' do
+      token = TestKeys.sign_token(valid_payload, key_pair, typ: nil)
+
+      expect { described_class.new.verify!(token) }
+        .to raise_error(IdpRails::VerificationError, /Not an access token/)
+    end
+
+    it 'raises InvalidAudienceError for a foreign audience' do
+      payload = valid_payload.merge(aud: 'https://other.example.com')
+      token = TestKeys.sign_token(payload, key_pair)
+
+      expect { described_class.new.verify!(token) }
+        .to raise_error(IdpRails::InvalidAudienceError)
+    end
+
+    it 'accepts an explicitly configured audience' do
+      IdpRails.configuration.audience = 'urn:platform:custom'
+      payload = valid_payload.merge(aud: 'urn:platform:custom')
+      token = TestKeys.sign_token(payload, key_pair)
+
+      expect(described_class.new.verify!(token).user_uuid).to eq('usr_abc123')
     end
 
     it 'raises VerificationError for tampered tokens' do

@@ -37,8 +37,12 @@ module TestKeys
     )
   end
 
-  def self.sign_token(payload, key_pair)
-    JWT.encode(payload, key_pair.private_key, 'ES256', { kid: key_pair.kid })
+  # idp stamps every access token with the RFC 9068 media type; pass an
+  # explicit typ (or nil) to exercise the verifier's rejection paths.
+  def self.sign_token(payload, key_pair, typ: 'at+jwt')
+    headers = { kid: key_pair.kid }
+    headers[:typ] = typ if typ
+    JWT.encode(payload, key_pair.private_key, 'ES256', headers)
   end
 end
 

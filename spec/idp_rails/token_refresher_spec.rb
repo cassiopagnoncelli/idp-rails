@@ -49,13 +49,6 @@ RSpec.describe IdpRails::TokenRefresher do
     expect(session[:idp_refresh_token]).to eq("old-refresh")
   end
 
-  it "keeps the session on :terms_required" do
-    outcome = described_class.call(session: session) { :terms_required }
-
-    expect(outcome).to be_terms_required
-    expect(session[:idp_refresh_token]).to eq("old-refresh")
-  end
-
   it "clears tokens and reports :missing when there is nothing to refresh" do
     empty_session = { idp_jwt: "stale" }
 

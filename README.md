@@ -31,6 +31,11 @@ IdpRails.configure do |c|
   # Required: must match the `iss` claim in tokens.
   c.issuer = "https://account.yourcompany.com"
 
+  # Optional: the expected `aud` claim (idp's single platform audience).
+  # Defaults to the issuer string, which matches idp's own default —
+  # set explicitly only when idp runs with a custom JWT_AUDIENCE.
+  # c.audience = "urn:platform:custom"
+
   # Optional: enable real-time revocation via Redis pub/sub.
   # When a user is suspended or changes their password, Idp
   # publishes to this channel. The subscriber maintains a 15-minute
@@ -133,17 +138,13 @@ passport = IdpRails.verify!(token)
 
 # Identity
 passport.user_uuid          # => "usr_a1b2c3d4"
-passport.email              # => "alice@example.com"
-passport.name               # => "Alice"
-passport.locale             # => "pt-BR"
-passport.time_zone          # => "America/Sao_Paulo"
-passport.phone_number       # => "+5511999999999"
-passport.created_at         # => 1711700000
-passport.confirmed_at       # => 1711800000
+# Profile accessors (email, name, locale, time_zone, phone_number,
+# email_verified?) return values only when wrapping an ID-token/userinfo
+# payload — access tokens carry no profile data (ADR-0001). Re-source
+# profile display from the ID token or the userinfo endpoint.
 
 # Security
-passport.email_verified?    # => true
-passport.mfa_verified?      # => true   (amr-derived on conformant tokens)
+passport.mfa_verified?      # => true   (amr contains "mfa")
 
 # Session & authentication context (conformant tokens; ADR-0001)
 passport.sid                # => "sid_9f8e7d"
@@ -173,9 +174,7 @@ passport.to_h               # => { iss: "...", sub: "...", ... }
 
 ## Token structure
 
-Access tokens are ES256-signed JWTs. The Passport reads **both** shapes (ADR-0001 in idp) transparently — prefer its accessors over raw claims.
-
-Conformant shape (OIDC / RFC 9068, header `typ: "at+jwt"`):
+Access tokens are ES256-signed JWTs in the conformant OIDC / RFC 9068 shape (ADR-0001 in idp) — header `typ: "at+jwt"`, verified along with `iss` and the platform `aud`:
 
 ```json
 {
@@ -196,10 +195,8 @@ Conformant shape (OIDC / RFC 9068, header `typ: "at+jwt"`):
 }
 ```
 
-Legacy shape (being phased out): the same top-level `iss/sub/iat/exp/jti` plus a nested `user` envelope carrying `email`, `name`, `email_verified`, `locale`, `time_zone`, `phone_number`, `created_at`, `confirmed_at`, `platform_role`, `mfa_verified`, `status`.
-
-- Profile fields (`email`, `name`, `locale`, `time_zone`, `phone_number`) exist only on legacy tokens — conformant access tokens carry authorization data only, and the accessors return `nil`. Re-source profile data from the ID token or the userinfo endpoint.
-- `mfa_verified?` derives from `amr` containing `"mfa"` on conformant tokens and falls back to the legacy `user.mfa_verified` boolean. Use it to gate sensitive operations.
+- Access tokens carry authorization data only — the profile accessors return `nil` on them. Re-source profile data from the ID token or the userinfo endpoint (a Passport can wrap those payloads too).
+- `mfa_verified?` derives from `amr` containing `"mfa"`. Use it to gate sensitive operations.
 - `platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks.
 - `amr` lists RFC 8176 authentication method references; `acr` is `"aal1"`/`"aal2"`; `auth_time` is the authentication event; `sid` is the SSO session id.
 

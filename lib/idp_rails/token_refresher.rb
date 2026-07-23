@@ -12,8 +12,6 @@ module IdpRails
   #   Hash from the block      → :refreshed      — session updated in place
   #   :invalid_grant           → :invalid_grant  — grant is dead; tokens
   #                                                cleared; re-login required
-  #   :terms_required          → :terms_required — session kept; user must
-  #                                                accept terms at idp first
   #   nil                      → :transient      — idp unreachable; session
   #                                                kept untouched so the next
   #                                                request retries the refresh
@@ -21,8 +19,6 @@ module IdpRails
   # @example
   #   outcome = IdpRails::TokenRefresher.call(session: session) do |refresh_token|
   #     IdpApiClient.refresh_token(refresh_token, user_agent: request.user_agent)
-  #   rescue IdpApiClient::TermsAcceptanceRequiredError
-  #     :terms_required
   #   rescue IdpApiClient::InvalidGrantError
   #     :invalid_grant
   #   end
@@ -32,7 +28,6 @@ module IdpRails
     Outcome = Struct.new(:status, :access_token, keyword_init: true) do
       def refreshed?      = status == :refreshed
       def invalid_grant?  = status == :invalid_grant
-      def terms_required? = status == :terms_required
       def transient?      = status == :transient
       def missing?        = status == :missing
     end
@@ -41,7 +36,7 @@ module IdpRails
     # @param jwt_key [Symbol] session key holding the idp access token
     # @param refresh_key [Symbol] session key holding the idp refresh token
     # @yield [refresh_token] performs the refresh-grant HTTP call
-    # @yieldreturn [Hash, :invalid_grant, :terms_required, nil] see above
+    # @yieldreturn [Hash, :invalid_grant, nil] see above
     # @return [Outcome]
     def self.call(session:, jwt_key: :idp_jwt, refresh_key: :idp_refresh_token)
       refresh_token = session[refresh_key]
@@ -65,8 +60,6 @@ module IdpRails
         session.delete(jwt_key)
         session.delete(refresh_key)
         Outcome.new(status: :invalid_grant)
-      when :terms_required
-        Outcome.new(status: :terms_required)
       else
         Outcome.new(status: :transient)
       end
