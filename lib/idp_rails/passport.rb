@@ -3,8 +3,8 @@
 module IdpRails
   # A decoded and verified JWT passport. Provides typed accessors for the
   # conformant OIDC / RFC 9068 claims idp issues (ADR-0001): flat top-level
-  # authorization data — platform_role, status, scope, amr/acr/auth_time,
-  # sid. Access tokens carry no profile fields; the profile accessors below
+  # authorization data — platform_role, scope, amr/acr/auth_time, sid.
+  # Access tokens carry no profile fields; the profile accessors below
   # yield values only when this class wraps an OIDC payload that has them
   # (an ID token or userinfo body) and return nil otherwise. Re-source
   # profile data from the ID token or userinfo, not the access token.
@@ -199,9 +199,13 @@ module IdpRails
       [ nil, "", "none" ].include?(platform_role)
     end
 
+    # Retired (ADR-0002): the status claim left the access token, because
+    # idp only ever issues one to an active account — holding a passport
+    # IS the assertion. Kept for 2.x API compatibility; always "active",
+    # which is what every caller comparing against it expected to find.
     def user_status
       require_user_token!(:user_status)
-      claims[:status]
+      "active"
     end
 
     # Retired (ADR-0001): terms left the token contract entirely. Kept

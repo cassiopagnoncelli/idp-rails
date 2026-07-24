@@ -76,9 +76,16 @@ RSpec.describe IdpRails::Passport do
   end
 
   describe 'authorization claims' do
-    it 'exposes platform_role and user_status from the top level' do
+    it 'exposes platform_role from the top level' do
       expect(passport.platform_role).to eq('none')
+    end
+
+    # ADR-0002: idp issues a passport only to an active account, so the
+    # claim is gone and the accessor answers what holding one means.
+    it 'answers user_status "active" whatever the token carries' do
       expect(passport.user_status).to eq('active')
+      expect(described_class.new(claims.except(:status)).user_status).to eq('active')
+      expect(described_class.new(claims.merge(status: 'suspended')).user_status).to eq('active')
     end
   end
 
@@ -134,7 +141,7 @@ RSpec.describe IdpRails::Passport do
       expect(legacy.email).to be_nil
       expect(legacy.platform_role).to be_nil
       expect(legacy.mfa_verified?).to be false
-      expect(legacy.user_status).to be_nil
+      expect(legacy.user_status).to eq('active')
       expect(legacy.terms_version).to be_nil
       expect(legacy.no_platform?).to be true
     end

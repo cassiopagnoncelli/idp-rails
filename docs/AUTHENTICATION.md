@@ -38,8 +38,8 @@ passport.platform_admin?    # at least admin
 passport.platform_member?   # at least member
 passport.platform_viewer?   # at least viewer
 passport.no_platform?
-passport.user_status
-passport.terms_version
+passport.user_status        # retired (ADR-0002) — always "active"
+passport.terms_version      # retired (ADR-0001) — always nil
 
 # Raw claims
 passport.to_h              # full claims hash
