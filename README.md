@@ -190,15 +190,35 @@ Access tokens are ES256-signed JWTs in the conformant OIDC / RFC 9068 shape (ADR
   "auth_time": 1711799000,
   "amr": ["pwd", "otp", "mfa"],
   "acr": "aal2",
-  "platform_role": "member"
+  "https://claims.entental.com/platform_role": "member"
 }
 ```
 
 - Access tokens carry authorization data only — the profile accessors return `nil` on them. Re-source profile data from the ID token or the userinfo endpoint (a Passport can wrap those payloads too).
 - `mfa_verified?` derives from `amr` containing `"mfa"`. Use it to gate sensitive operations.
-- `platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks.
+- `platform_role` is the platform-wide role (`owner`, `admin`, `member`, `viewer`, or `none`). Use the tiered predicates (`platform_admin?`, `platform_member?`, `platform_viewer?`) for "at least" checks. On the wire it is emitted under the namespaced key `https://claims.entental.com/platform_role` (idp ADR-0003) so it cannot collide with a federated token's claims; **always read it through `#platform_role`**, never by digging the raw claim. The accessor falls back to the bare `platform_role` key for any pre-flip token still in flight.
 - There is no `status` claim (idp ADR-0002): idp issues a passport only to an active account, so holding one is the assertion. `user_status` is retired and always answers `"active"`.
 - `amr` lists RFC 8176 authentication method references; `acr` is `"aal1"`/`"aal2"`; `auth_time` is the authentication event; `sid` is the SSO session id.
+
+### `amr` vocabulary
+
+The values idp emits in `amr` (RFC 8176 authentication method references). An unknown `amr` value is safely ignorable by RFC 8176, so this list can grow without breaking readers:
+
+| Value | Meaning | Status |
+|---|---|---|
+| `pwd` | Password | RFC 8176 registered |
+| `otp` | One-time code — TOTP or a backup code | RFC 8176 registered |
+| `hwk` | Hardware-secured key — WebAuthn/passkey | RFC 8176 registered |
+| `user` | User-presence/verification performed (e.g. WebAuthn UV) | RFC 8176 registered |
+| `mfa` | The sign-in was multi-factor (`mfa_verified?` keys off this) | RFC 8176 registered |
+| `fed` | Federated sign-in — Google SSO | Unregistered, conventional (Auth0/Entra) |
+| `email` | Email-confirmation auto-login | Unregistered, conventional |
+
+`fed` and `email` are intentionally non-registered but carry real information a step-up policy can use; IANA registration is a possible future upgrade.
+
+### Service (client-credentials) tokens
+
+A client-credentials token has no user identity — `sub` is the client id, and `#service?` returns true (`sub == client_id`, RFC 9068's own discriminator; idp ADR-0003 dropped the former `token_use: "client"` marker). User-only accessors raise `NotAUserToken`; use `#service?`, `#client_id`, `#scopes`, `#has_scope?` instead. `#token_use` is retired and always returns `nil`.
 
 ## Real-time revocation
 

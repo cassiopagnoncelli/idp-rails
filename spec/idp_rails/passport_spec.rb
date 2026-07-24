@@ -19,8 +19,7 @@ RSpec.describe IdpRails::Passport do
       auth_time: 1_712_000_000,
       amr: %w[pwd otp mfa],
       acr: 'aal2',
-      platform_role: 'none',
-      status: 'active'
+      IdpRails::Passport::PLATFORM_ROLE_CLAIM => 'none'
     }
   end
 
@@ -76,8 +75,20 @@ RSpec.describe IdpRails::Passport do
   end
 
   describe 'authorization claims' do
-    it 'exposes platform_role from the top level' do
+    it 'exposes platform_role from the namespaced claim (ADR-0003)' do
       expect(passport.platform_role).to eq('none')
+    end
+
+    it 'falls back to the bare platform_role key for a pre-flip token' do
+      bare = described_class.new(
+        claims.except(IdpRails::Passport::PLATFORM_ROLE_CLAIM).merge(platform_role: 'admin')
+      )
+      expect(bare.platform_role).to eq('admin')
+    end
+
+    it 'prefers the namespaced key over a stale bare key' do
+      both = described_class.new(claims.merge(platform_role: 'owner'))
+      expect(both.platform_role).to eq('none')
     end
 
     # ADR-0002: idp issues a passport only to an active account, so the
@@ -149,7 +160,8 @@ RSpec.describe IdpRails::Passport do
 
   describe 'platform role tiers' do
     def with_role(role)
-      described_class.new(role.nil? ? claims.except(:platform_role) : claims.merge(platform_role: role))
+      key = IdpRails::Passport::PLATFORM_ROLE_CLAIM
+      described_class.new(role.nil? ? claims.except(key) : claims.merge(key => role))
     end
 
     it 'owner satisfies every tier' do
@@ -214,6 +226,8 @@ RSpec.describe IdpRails::Passport do
   end
 
   describe 'service tokens (client_credentials)' do
+    # No token_use marker (ADR-0003): a client-credentials token is identified
+    # structurally by sub == client_id (RFC 9068).
     let(:service_claims) do
       {
         iss: 'https://account.test',
@@ -223,16 +237,22 @@ RSpec.describe IdpRails::Passport do
         exp: (Time.now + 900).to_i,
         jti: 'svc_xyz',
         client_id: 'crm_service',
-        scope: 'users:lookup reports:read',
-        token_use: 'client'
+        scope: 'users:lookup reports:read'
       }
     end
     subject(:service_passport) { described_class.new(service_claims) }
 
-    it 'identifies the token as a service token' do
+    it 'identifies the token as a service token by sub == client_id' do
       expect(service_passport.service?).to be true
       expect(service_passport.user?).to be false
-      expect(service_passport.token_use).to eq('client')
+    end
+
+    it 'retires token_use to always-nil (ADR-0003)' do
+      expect(service_passport.token_use).to be_nil
+      # even if a legacy token still carries the old marker, it is ignored
+      legacy = described_class.new(service_claims.merge(token_use: 'client'))
+      expect(legacy.token_use).to be_nil
+      expect(legacy.service?).to be true
     end
 
     it 'exposes client_id and scopes' do

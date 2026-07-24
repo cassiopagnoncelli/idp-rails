@@ -17,8 +17,7 @@ RSpec.describe IdpRails::Verifier do
       jti: 'tok_xyz789',
       amr: %w[pwd otp mfa],
       acr: 'aal2',
-      platform_role: 'none',
-      status: 'active'
+      IdpRails::Passport::PLATFORM_ROLE_CLAIM => 'none'
     }
   end
 

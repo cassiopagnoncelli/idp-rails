@@ -19,6 +19,13 @@ module IdpRails
   #   passport.platform_role    # => "member"
   #   passport.platform_member? # => true
   class Passport
+    # platform_role is namespaced on the wire (idp ADR-0003) so it can never
+    # collide with a same-named claim from a federated token idp does not
+    # control. The namespace is a stable *identifier*, not a per-environment
+    # URL, so the key is a constant here rather than configuration. Claims are
+    # deep-symbolized, so the lookup key is this symbol.
+    PLATFORM_ROLE_CLAIM = :"https://claims.entental.com/platform_role"
+
     attr_reader :claims
 
     def initialize(claims)
@@ -45,14 +52,21 @@ module IdpRails
 
     # --- Token type discriminator ---
 
-    # @return [String, nil] "client" for service tokens (client_credentials),
-    #   nil for user tokens issued by Idp.
+    # Retired (ADR-0003): client-credentials tokens no longer carry a
+    # `token_use` marker — the discriminator is structural (#service?, i.e.
+    # sub == client_id). Kept for 2.x API compatibility; always nil.
     def token_use
-      claims[:token_use]
+      nil
     end
 
+    # A client-credentials (service) token. RFC 9068's own discriminator: a
+    # client-credentials token's subject IS the client, so sub == client_id
+    # (ADR-0003). A user token carries client_id = the app but sub = the user
+    # uuid ≠ client_id, so the two are unambiguous. First-party user tokens
+    # carry no client_id and are never service tokens.
     def service?
-      token_use == "client"
+      client = claims[:client_id]
+      !client.nil? && !client.to_s.empty? && claims[:sub] == client
     end
 
     def user?
@@ -171,9 +185,14 @@ module IdpRails
     # Platform-wide role claim, ranked owner > admin > member > viewer
     # > none. The tiered predicates below are "at least" checks —
     # platform_admin? is true for owners too.
+    #
+    # Read from the namespaced key (ADR-0003), with a fallback to the bare
+    # key for any pre-flip token still in flight (≤15 min AT TTL). The
+    # fallback is belt-and-braces for a single coordinated release and is
+    # droppable once no bare-key token can remain.
     def platform_role
       require_user_token!(:platform_role)
-      claims[:platform_role]
+      claims[PLATFORM_ROLE_CLAIM] || claims[:platform_role]
     end
 
     def platform_owner?
