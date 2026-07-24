@@ -21,10 +21,18 @@ module IdpRails
   class Passport
     # platform_role is namespaced on the wire (idp ADR-0003) so it can never
     # collide with a same-named claim from a federated token idp does not
-    # control. The namespace is a stable *identifier*, not a per-environment
-    # URL, so the key is a constant here rather than configuration. Claims are
-    # deep-symbolized, so the lookup key is this symbol.
-    PLATFORM_ROLE_CLAIM = :"https://claims.entental.com/platform_role"
+    # control. The namespace is a stable, brand-neutral *identifier* — a URN,
+    # never fetched, and independent of both issuer and product brand (the
+    # platform is white-labelled). It is a fixed shared wire constant that
+    # must equal idp's `config.x.jwt.claim_namespace` + "platform_role"
+    # verbatim. Claims are deep-symbolized, so the lookup key is this symbol.
+    PLATFORM_ROLE_CLAIM = :"urn:idp:platform_role"
+
+    # The pre-amendment namespaced key (idp ADR-0003 first cut). Read as a
+    # transitional fallback so a token minted by an idp install that has not
+    # yet cut over to the URN is still understood; dropped once no such token
+    # can remain in flight (≤15 min AT TTL).
+    LEGACY_PLATFORM_ROLE_CLAIM = :"https://claims.entental.com/platform_role"
 
     attr_reader :claims
 
@@ -186,13 +194,14 @@ module IdpRails
     # > none. The tiered predicates below are "at least" checks —
     # platform_admin? is true for owners too.
     #
-    # Read from the namespaced key (ADR-0003), with a fallback to the bare
-    # key for any pre-flip token still in flight (≤15 min AT TTL). The
-    # fallback is belt-and-braces for a single coordinated release and is
-    # droppable once no bare-key token can remain.
+    # Read from the URN key (ADR-0003 amended), falling back to the earlier
+    # namespaced key and then the pre-ADR-0003 bare key for any token minted
+    # by a not-yet-cut-over idp install (≤15 min AT TTL). All fallbacks are
+    # belt-and-braces for the coordinated release and collapse to the URN
+    # once no older token can remain.
     def platform_role
       require_user_token!(:platform_role)
-      claims[PLATFORM_ROLE_CLAIM] || claims[:platform_role]
+      claims[PLATFORM_ROLE_CLAIM] || claims[LEGACY_PLATFORM_ROLE_CLAIM] || claims[:platform_role]
     end
 
     def platform_owner?

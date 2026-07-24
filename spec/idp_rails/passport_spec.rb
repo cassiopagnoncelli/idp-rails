@@ -86,6 +86,14 @@ RSpec.describe IdpRails::Passport do
       expect(bare.platform_role).to eq('admin')
     end
 
+    it 'falls back to the earlier namespaced key for a not-yet-cut-over idp' do
+      legacy = described_class.new(
+        claims.except(IdpRails::Passport::PLATFORM_ROLE_CLAIM)
+              .merge(IdpRails::Passport::LEGACY_PLATFORM_ROLE_CLAIM => 'member')
+      )
+      expect(legacy.platform_role).to eq('member')
+    end
+
     it 'prefers the namespaced key over a stale bare key' do
       both = described_class.new(claims.merge(platform_role: 'owner'))
       expect(both.platform_role).to eq('none')
