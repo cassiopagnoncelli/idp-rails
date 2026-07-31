@@ -26,6 +26,14 @@ module IdpRails
     # @return [Integer]
     attr_accessor :jwks_cache_ttl
 
+    # How long a revocation blocklist entry is retained (seconds). It only has
+    # to outlive the newest token it could still be covering, so this must
+    # match idp's access token TTL (JWT_ACCESS_TOKEN_TTL, itself 15 minutes by
+    # default). Set it whenever idp's has been moved: too short and revoked
+    # tokens come back to life before they expire.
+    # @return [Integer]
+    attr_accessor :blocklist_ttl
+
     # Clock skew tolerance in seconds for exp/iat validation.
     # @return [Integer]
     attr_accessor :clock_skew
@@ -74,6 +82,7 @@ module IdpRails
       @jwks_url = nil
       @issuer = "https://account.yourcompany.com"
       @jwks_cache_ttl = 3600
+      @blocklist_ttl = RevocationSubscriber::BLOCKLIST_TTL
       @clock_skew = 30
       @redis = nil
       @cache_redis = nil

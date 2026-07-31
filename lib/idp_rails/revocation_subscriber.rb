@@ -27,18 +27,25 @@ module IdpRails
   #   subscriber = IdpRails::RevocationSubscriber.new(redis: Redis.new)
   #   subscriber.start  # spawns a background thread
   #
-  #   subscriber.revoked?("usr_abc123", issued_at: passport.issued_at)
+  #   subscriber.revoked?("usr_abc123", issued_at: passport.issued_at, sid: passport.sid)
   #
   #   subscriber.stop   # clean shutdown
   class RevocationSubscriber
     include MonitorMixin
 
-    # How long to keep entries in the blocklist (seconds).
-    # Should match the access token TTL.
+    # Default retention for a blocklist entry (seconds). An entry only has to
+    # outlive the newest token it could still be covering, which is one access
+    # token TTL — configure `blocklist_ttl` to match idp's JWT_ACCESS_TOKEN_TTL
+    # when that has been moved off its own 15-minute default, or revoked tokens
+    # come back to life early.
     BLOCKLIST_TTL = 900 # 15 minutes
 
     # RabbitMQ fanout exchange name.
     EXCHANGE_NAME = "idp.token_revocations"
+
+    # The key a subject-wide revocation is filed under: one that named no
+    # session, so it covers every token the subject holds.
+    ALL_SESSIONS = nil
 
     def initialize(redis: nil, channel: nil, config: IdpRails.configuration)
       super() # MonitorMixin
@@ -46,25 +53,32 @@ module IdpRails
       @redis_config = redis || config.redis
       @rabbitmq_url = config.rabbitmq_url
       @channel = channel || config.revocation_channel
-      # { "usr_xxx" => { deadline: <monotonic>, cutoff: <unix seconds> } }
+      # { "usr_xxx" => { deadline: <monotonic>, cutoffs: { sid_or_nil => <unix secs> } } }
       @blocklist = {}
       @thread = nil
       @running = false
       @bunny_connection = nil
     end
 
-    # Is the given token revoked? The subject names WHOSE tokens were
-    # revoked; `issued_at` says whether THIS one is among them.
+    # Is the given token revoked? The subject names WHOSE tokens were revoked,
+    # `issued_at` says whether THIS one is old enough to be among them, and
+    # `sid` says whether it belongs to the session that was ended.
     #
     # A token issued after the revocation instant post-dates the event and is
     # not covered by it — that is the fresh passport a user holds after
     # signing back in. Omitting `issued_at` cannot make that distinction, so
     # it fails closed and blocks the subject outright.
     #
+    # A session-scoped event (idp named a `sid`) leaves the subject's OTHER
+    # sessions alone: signing out on a laptop is not a reason to refuse the
+    # phone. A token carrying no `sid` cannot be matched either way, so it
+    # fails closed against any session-scoped entry.
+    #
     # @param user_uuid [String]
     # @param issued_at [Time, Integer, nil] the token's `iat`
+    # @param sid [String, nil] the token's `sid`
     # @return [Boolean]
-    def revoked?(user_uuid, issued_at: nil)
+    def revoked?(user_uuid, issued_at: nil, sid: nil)
       synchronize do
         entry = @blocklist[user_uuid]
         return false unless entry
@@ -76,7 +90,7 @@ module IdpRails
 
         return true if issued_at.nil?
 
-        issued_at.to_i <= entry[:cutoff]
+        covers?(entry[:cutoffs], issued_at.to_i, sid)
       end
     end
 
@@ -118,19 +132,22 @@ module IdpRails
     # `revoked_at` is the instant the grants were revoked — tokens issued at
     # or before it are refused, later ones are not. It defaults to now, which
     # is what a caller reaching for this without one means.
-    def block!(user_uuid, ttl: BLOCKLIST_TTL, revoked_at: nil)
+    #
+    # `sid` narrows the entry to one session. Omit it for the revocations that
+    # genuinely end everything (password change, suspension, sign out
+    # everywhere) — which is also what an idp too old to publish `sid` means.
+    def block!(user_uuid, ttl: nil, revoked_at: nil, sid: ALL_SESSIONS)
       cutoff = to_unix(revoked_at) || Time.now.to_i
 
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + (ttl || @config.blocklist_ttl)
 
       synchronize do
-        entry = @blocklist[user_uuid]
-        # Overlapping revocations: the widest window and the latest cutoff
-        # win, so an earlier event can never narrow a later one.
-        @blocklist[user_uuid] = {
-          deadline: [ deadline, entry&.fetch(:deadline) ].compact.max,
-          cutoff: [ cutoff, entry&.fetch(:cutoff) ].compact.max
-        }
+        entry = @blocklist[user_uuid] || { deadline: deadline, cutoffs: {} }
+        # Overlapping revocations: the widest window and, per session, the
+        # latest cutoff win, so an earlier event can never narrow a later one.
+        entry[:deadline] = [ deadline, entry[:deadline] ].max
+        entry[:cutoffs][sid] = [ cutoff, entry[:cutoffs][sid] ].compact.max
+        @blocklist[user_uuid] = entry
       end
     end
 
@@ -210,10 +227,31 @@ module IdpRails
       # revocation — and never widens the window the way a skew cushion here
       # would, since that would re-refuse the fast re-login this exists to
       # let through.
-      block!(user_uuid, revoked_at: data["revoked_at"])
-      @config.logger.info("[IdpRails] User revoked: #{user_uuid} (reason: #{data['reason']})")
+      #
+      # `sid` names the session idp actually ended. Absent, the event is
+      # subject-wide — either a revocation that genuinely ends everything, or
+      # an idp too old to say which session, and both must fail closed.
+      sid = data["sid"].to_s.empty? ? ALL_SESSIONS : data["sid"]
+      block!(user_uuid, revoked_at: data["revoked_at"], sid: sid)
+      scope = sid ? "session #{sid}" : "all sessions"
+      @config.logger.info("[IdpRails] User revoked: #{user_uuid} (#{scope}, reason: #{data['reason']})")
     rescue JSON::ParserError => e
       @config.logger.warn("[IdpRails] Invalid revocation message: #{e.message}")
+    end
+
+    # Do any of a subject's live revocations cover this token?
+    #
+    # A sid-less token cannot be matched to a session entry, so it is refused
+    # by any of them — the same answer the subject-wide blocklist gave before
+    # sessions were distinguished.
+    def covers?(cutoffs, issued_at, sid)
+      wide = cutoffs[ALL_SESSIONS]
+      return true if wide && issued_at <= wide
+
+      return cutoffs.any? { |key, cutoff| !key.nil? && issued_at <= cutoff } if sid.nil?
+
+      cutoff = cutoffs[sid]
+      !cutoff.nil? && issued_at <= cutoff
     end
 
     # Unix seconds from an ISO8601 string, a Time, or an integer. nil for

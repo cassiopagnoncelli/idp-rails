@@ -76,10 +76,14 @@ module IdpRails
       # tracked in the revocation channel. Skip the lookup entirely.
       return if passport.service?
 
-      # `iat` decides whether THIS token is one of the revoked ones: a
-      # passport minted after the revocation belongs to a sign-in that came
-      # later and was never revoked.
-      return unless @revocation_subscriber.revoked?(passport.subject, issued_at: passport.issued_at)
+      # `iat` decides whether THIS token is one of the revoked ones (a passport
+      # minted after the revocation belongs to a sign-in that came later and
+      # was never revoked), and `sid` which session it speaks for — ending one
+      # session is no reason to refuse the subject's others.
+      revoked = @revocation_subscriber.revoked?(
+        passport.subject, issued_at: passport.issued_at, sid: passport.sid
+      )
+      return unless revoked
 
       raise RevokedTokenError, "Token has been revoked"
     end
