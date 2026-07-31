@@ -224,9 +224,16 @@ A client-credentials token has no user identity — `sub` is the client id, and 
 
 When enabled, the gem subscribes to a Redis pub/sub channel and maintains an in-memory blocklist of revoked user UUIDs. Entries auto-expire after 15 minutes (the access token TTL).
 
+An entry blocks the tokens that **existed when the revocation happened**, not the subject: it carries the event's `revoked_at`, and a token is refused only when its `iat` is at or before it. A token minted afterwards — the passport a user holds after signing back in — is untouched. Blocking the subject outright instead would refuse that passport too, for the rest of the window, and signing in again could not clear it.
+
+It also honours the event's `sid` when there is one. Idp's RP-initiated logout revokes exactly one grant — one client, one SSO session — so the event names that session and the entry is scoped to it: signing out on a laptop does not refuse the same user's phone. Events that carry no `sid` are subject-wide, which covers both the revocations that genuinely end everything (password change, suspension, sign out everywhere) and an idp too old to publish one. A token carrying no `sid` of its own cannot be matched either way, so it fails closed against any session-scoped entry.
+
+Entries are retained for `blocklist_ttl` (default 900s). **This must match idp's `JWT_ACCESS_TOKEN_TTL`** — an entry only has to outlive the newest token it could still be covering, and one shorter than the token lifetime lets revoked tokens come back to life before they expire.
+
 Idp publishes to this channel when:
 - A user's password is changed
 - A user is suspended by an admin
+- A session is ended (RP-initiated logout, `/oauth/revoke`, family replay)
 - An admin triggers emergency revocation
 
 If a sister app misses an event (restart, Redis blip), the access token still expires naturally within 15 minutes. This is a best-effort acceleration layer, not a hard guarantee.
@@ -236,6 +243,10 @@ IdpRails.configure do |c|
   c.redis = ENV["REDIS_URL"]   # enables the subscriber
   # c.redis = { host: "redis.internal", port: 6379 }  # also works
   # c.redis = Redis.new(...)  # or pass an instance
+
+  # Entry retention. Leave it alone unless idp runs with a non-default
+  # JWT_ACCESS_TOKEN_TTL — then set it to the same number of seconds.
+  # c.blocklist_ttl = 1800
 end
 ```
 

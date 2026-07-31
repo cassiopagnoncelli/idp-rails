@@ -104,14 +104,26 @@ RSpec.describe IdpRails::Verifier do
   describe 'revocation checking' do
     let(:subscriber) { IdpRails::RevocationSubscriber.new }
 
-    it 'rejects revoked users' do
-      subscriber.block!('usr_abc123')
+    it 'rejects a token the revocation covers' do
+      subscriber.block!('usr_abc123', revoked_at: Time.now + 60)
 
       token = TestKeys.sign_token(valid_payload, key_pair)
       verifier = described_class.new(revocation_subscriber: subscriber)
 
       expect { verifier.verify!(token) }
         .to raise_error(IdpRails::RevokedTokenError)
+    end
+
+    # Sign out, sign straight back in: the passport is minted after the
+    # revocation the sign-out fired, so the event does not reach it.
+    it 'passes a token issued after the revocation' do
+      subscriber.block!('usr_abc123', revoked_at: Time.now - 60)
+
+      token = TestKeys.sign_token(valid_payload, key_pair)
+      verifier = described_class.new(revocation_subscriber: subscriber)
+
+      passport = verifier.verify!(token)
+      expect(passport.user_uuid).to eq('usr_abc123')
     end
 
     it 'passes non-revoked users' do
