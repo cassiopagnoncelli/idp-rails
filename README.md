@@ -224,9 +224,12 @@ A client-credentials token has no user identity — `sub` is the client id, and 
 
 When enabled, the gem subscribes to a Redis pub/sub channel and maintains an in-memory blocklist of revoked user UUIDs. Entries auto-expire after 15 minutes (the access token TTL).
 
+An entry blocks the tokens that **existed when the revocation happened**, not the subject: it carries the event's `revoked_at`, and a token is refused only when its `iat` is at or before it. A token minted afterwards — the passport a user holds after signing back in — is untouched. Blocking the subject outright instead would refuse that passport too, for the rest of the window, and signing in again could not clear it.
+
 Idp publishes to this channel when:
 - A user's password is changed
 - A user is suspended by an admin
+- A session is ended (RP-initiated logout, `/oauth/revoke`, family replay)
 - An admin triggers emergency revocation
 
 If a sister app misses an event (restart, Redis blip), the access token still expires naturally within 15 minutes. This is a best-effort acceleration layer, not a hard guarantee.

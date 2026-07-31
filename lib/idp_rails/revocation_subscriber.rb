@@ -7,6 +7,16 @@ module IdpRails
   # blocklist of revoked user UUIDs. Entries auto-expire after the access
   # token TTL (15 minutes by default).
   #
+  # An entry blocks the tokens that EXISTED when the revocation happened, not
+  # the subject itself: each one carries the revocation instant, and a token
+  # is refused only when it was issued at or before it. Blocking the subject
+  # outright is the same sentence with a much longer reach — it also refuses
+  # every token minted afterwards, so a user who signs out and straight back
+  # in presents a legitimately fresh passport and is turned away for the rest
+  # of the window. Signing in again cannot clear that, because the next
+  # sign-out re-arms it; the console reads the 401s as "your session has
+  # expired" and says so on every surface at once.
+  #
   # Supports two transports (exclusive-or):
   #   - RabbitMQ (preferred) — uses a fanout exchange with ephemeral queues
   #   - Redis pub/sub (fallback) — classic channel subscription
@@ -17,7 +27,7 @@ module IdpRails
   #   subscriber = IdpRails::RevocationSubscriber.new(redis: Redis.new)
   #   subscriber.start  # spawns a background thread
   #
-  #   subscriber.revoked?("usr_abc123")  # => true/false
+  #   subscriber.revoked?("usr_abc123", issued_at: passport.issued_at)
   #
   #   subscriber.stop   # clean shutdown
   class RevocationSubscriber
@@ -36,27 +46,37 @@ module IdpRails
       @redis_config = redis || config.redis
       @rabbitmq_url = config.rabbitmq_url
       @channel = channel || config.revocation_channel
-      @blocklist = {} # { "usr_xxx" => expires_at_monotonic }
+      # { "usr_xxx" => { deadline: <monotonic>, cutoff: <unix seconds> } }
+      @blocklist = {}
       @thread = nil
       @running = false
       @bunny_connection = nil
     end
 
-    # Is the given user UUID currently in the revocation blocklist?
+    # Is the given token revoked? The subject names WHOSE tokens were
+    # revoked; `issued_at` says whether THIS one is among them.
+    #
+    # A token issued after the revocation instant post-dates the event and is
+    # not covered by it — that is the fresh passport a user holds after
+    # signing back in. Omitting `issued_at` cannot make that distinction, so
+    # it fails closed and blocks the subject outright.
     #
     # @param user_uuid [String]
+    # @param issued_at [Time, Integer, nil] the token's `iat`
     # @return [Boolean]
-    def revoked?(user_uuid)
+    def revoked?(user_uuid, issued_at: nil)
       synchronize do
-        deadline = @blocklist[user_uuid]
-        return false unless deadline
+        entry = @blocklist[user_uuid]
+        return false unless entry
 
-        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > entry[:deadline]
           @blocklist.delete(user_uuid)
           return false
         end
 
-        true
+        return true if issued_at.nil?
+
+        issued_at.to_i <= entry[:cutoff]
       end
     end
 
@@ -94,9 +114,23 @@ module IdpRails
     end
 
     # Manually add a user to the blocklist (useful for testing).
-    def block!(user_uuid, ttl: BLOCKLIST_TTL)
+    #
+    # `revoked_at` is the instant the grants were revoked — tokens issued at
+    # or before it are refused, later ones are not. It defaults to now, which
+    # is what a caller reaching for this without one means.
+    def block!(user_uuid, ttl: BLOCKLIST_TTL, revoked_at: nil)
+      cutoff = to_unix(revoked_at) || Time.now.to_i
+
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl
+
       synchronize do
-        @blocklist[user_uuid] = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl
+        entry = @blocklist[user_uuid]
+        # Overlapping revocations: the widest window and the latest cutoff
+        # win, so an earlier event can never narrow a later one.
+        @blocklist[user_uuid] = {
+          deadline: [ deadline, entry&.fetch(:deadline) ].compact.max,
+          cutoff: [ cutoff, entry&.fetch(:cutoff) ].compact.max
+        }
       end
     end
 
@@ -170,10 +204,38 @@ module IdpRails
       user_uuid = data["sub"]
       return unless user_uuid
 
-      block!(user_uuid)
+      # idp stamps `revoked_at` off the same clock that stamps `iat`, so the
+      # two compare exactly. A publisher old enough not to send it falls back
+      # to arrival, which delivery latency keeps within milliseconds of the
+      # revocation — and never widens the window the way a skew cushion here
+      # would, since that would re-refuse the fast re-login this exists to
+      # let through.
+      block!(user_uuid, revoked_at: data["revoked_at"])
       @config.logger.info("[IdpRails] User revoked: #{user_uuid} (reason: #{data['reason']})")
     rescue JSON::ParserError => e
       @config.logger.warn("[IdpRails] Invalid revocation message: #{e.message}")
+    end
+
+    # Unix seconds from an ISO8601 string, a Time, or an integer. nil for
+    # anything unreadable, so a malformed stamp falls back to arrival rather
+    # than to 1970 (which would block nothing at all).
+    def to_unix(value)
+      case value
+      when nil then nil
+      when Time then value.to_i
+      when Integer then value
+      when String
+        begin
+          Time.at(Integer(value)).to_i
+        rescue ArgumentError, TypeError
+          begin
+            require "time"
+            Time.iso8601(value).to_i
+          rescue ArgumentError
+            nil
+          end
+        end
+      end
     end
 
     def build_redis
