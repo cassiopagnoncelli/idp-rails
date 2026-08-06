@@ -28,6 +28,15 @@ issuer and RP-initiated logout endpoint all come from the document idp already
 publishes, instead of from three settings that can drift apart. Anything set
 explicitly still wins, so a consumer can adopt it on its own schedule.
 
+Once a document has been fetched it is kept: a later refresh that fails serves
+the last one rather than failing the token check with it, since these endpoints
+change about never and idp being briefly unreachable is no reason to refuse
+valid tokens. With nothing cached yet, `jwks_url` and `issuer` raise an error
+naming discovery — they are load-bearing, and answering `nil` only relocates
+the failure to `URI(nil)` somewhere far less informative. `end_session_endpoint`
+does answer `nil`, because its callers already treat a missing endpoint as
+"sign out locally".
+
 ```ruby
 IdpRails.configure do |c|
   # idp's base url. With it, jwks_url / issuer / end_session_endpoint are

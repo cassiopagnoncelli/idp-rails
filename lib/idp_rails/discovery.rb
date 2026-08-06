@@ -74,9 +74,30 @@ module IdpRails
 
     private
 
+    # A document that has gone stale is still overwhelmingly likely to be
+    # right: these endpoints change about never, and the TTL exists to pick up
+    # a move eventually, not to guard against one mid-request. So a refresh
+    # that fails falls back to the last document we hold rather than taking
+    # token verification down with it — idp being briefly unreachable should
+    # not log out everyone holding a perfectly valid token.
+    #
+    # With nothing cached there is nothing to fall back TO, and the error is
+    # the honest answer.
     def document
       cached = synchronize { @document if fresh? }
-      cached || refresh!
+      return cached if cached
+
+      begin
+        refresh!
+      rescue StandardError => e
+        stale, stale_at = synchronize { [ @document, @fetched_at ] }
+        raise unless stale
+
+        @config.logger.warn(
+          "[IdpRails] Discovery refresh failed (#{e.message}); serving the document fetched at #{stale_at}"
+        )
+        stale
+      end
     end
 
     def fresh?

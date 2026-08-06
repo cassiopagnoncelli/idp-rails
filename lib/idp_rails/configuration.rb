@@ -26,7 +26,7 @@ module IdpRails
     attr_writer :jwks_url
 
     def jwks_url
-      @jwks_url || discovered("jwks_uri")
+      @jwks_url || required_from_discovery("jwks_uri")
     end
 
     # Expected issuer claim (iss). Tokens with a different issuer are rejected.
@@ -34,7 +34,14 @@ module IdpRails
     attr_writer :issuer
 
     def issuer
-      @issuer || discovered("issuer") || DEFAULT_ISSUER
+      return @issuer if @issuer
+      # DEFAULT_ISSUER is for an app that configured neither — never a stand-in
+      # for a discovery lookup that failed, which would turn an outage into
+      # InvalidIssuerError on every token and send the reader hunting for a
+      # clock skew or a rotated key.
+      return required_from_discovery("issuer") if discovery_url
+
+      DEFAULT_ISSUER
     end
 
     # RP-initiated logout endpoint. Published by idp; there is no reason for a
@@ -171,14 +178,32 @@ module IdpRails
 
     private
 
-    # A discovery document that cannot be fetched must not take the process
-    # down: the explicit settings, if any, are still there, and the caller's
-    # own error is more useful than one from three frames deeper.
+    # OPTIONAL keys. nil is a usable answer here — end_session_endpoint's
+    # callers already treat a missing endpoint as "sign out locally" — so a
+    # discovery that cannot be read costs the feature and nothing else.
     def discovered(key)
       discovery&.[](key)
     rescue StandardError => e
       logger.warn("[IdpRails] Discovery lookup for #{key} failed: #{e.message}")
       nil
+    end
+
+    # REQUIRED keys. nil is NOT a usable answer: handing one back to JwksClient
+    # gets `URI(nil)` and an ArgumentError raised on the token-verification
+    # path, three frames from anything that names discovery. Whoever reads that
+    # backtrace at 3am deserves the actual sentence.
+    def required_from_discovery(key)
+      raise Error, "#{key} is not configured, and no discovery_url is set to fetch it from" unless discovery
+
+      value =
+        begin
+          discovery[key]
+        rescue StandardError => e
+          raise Error, "Could not read #{key} from idp's discovery document at #{discovery_url}: #{e.message}"
+        end
+      return value if value
+
+      raise Error, "idp's discovery document at #{discovery_url} does not publish #{key}"
     end
   end
 end
