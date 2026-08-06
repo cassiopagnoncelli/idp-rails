@@ -58,13 +58,19 @@ IdpRails.configure do |c|
   # set explicitly only when idp runs with a custom JWT_AUDIENCE.
   # c.audience = "urn:platform:custom"
 
-  # Optional: enable real-time revocation via Redis pub/sub.
-  # When a user is suspended or changes their password, Idp
-  # publishes to this channel. The subscriber maintains a 15-minute
-  # in-memory blocklist so revoked tokens are rejected immediately
-  # rather than waiting for natural expiry.
-  # Set to nil (default) to disable.
-  c.redis = ENV["REDIS_URL"]
+  # Optional: enable real-time revocation. When a user is suspended or
+  # changes their password, Idp publishes to this channel. The subscriber
+  # maintains a 15-minute in-memory blocklist so revoked tokens are rejected
+  # immediately rather than waiting for natural expiry. Leave both nil
+  # (the default) to disable.
+  #
+  # RabbitMQ is preferred when both are set; Redis is the fallback for
+  # deployments running one and not the other. Both follow the platform's
+  # standard fallback chain: the IDP_-prefixed variable names the broker idp
+  # publishes on, and the app's own broker is the default, since one broker
+  # serves everything in most deployments.
+  c.rabbitmq_url = ENV["IDP_RABBITMQ_URL"].presence || ENV["RABBITMQ_URL"].presence
+  c.redis = ENV["IDP_REDIS_URL"].presence || ENV["REDIS_URL"].presence
 
   # --- Defaults (usually fine as-is) ---
 
@@ -265,7 +271,9 @@ Idp publishes to this channel when:
 
 ```ruby
 IdpRails.configure do |c|
-  c.redis = ENV["REDIS_URL"]   # enables the subscriber
+  # Either transport enables the subscriber; RabbitMQ wins when both are set.
+  c.rabbitmq_url = ENV["IDP_RABBITMQ_URL"].presence || ENV["RABBITMQ_URL"].presence
+  c.redis = ENV["IDP_REDIS_URL"].presence || ENV["REDIS_URL"].presence
   # c.redis = { host: "redis.internal", port: 6379 }  # also works
   # c.redis = Redis.new(...)  # or pass an instance
 
