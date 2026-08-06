@@ -174,6 +174,15 @@ RSpec.describe IdpRails::RevocationSubscriber do
       deliver(reason: 'session_revoked')
       expect(subscriber.revoked?(nil)).to be false
     end
+
+    # A garbled payload costs one message, never the subscribe loop it arrived
+    # on — the loop's only rescue logs and RETURNS, so a raise here would stop
+    # the process hearing revocations at all.
+    it 'refuses a payload that is not a mapping rather than raising' do
+      expect { deliver([ 1, 2 ]) }.not_to raise_error
+      expect { deliver('a bare string') }.not_to raise_error
+      expect { subscriber.send(:handle_message, 'not json at all') }.not_to raise_error
+    end
   end
 
   describe '#clear!' do

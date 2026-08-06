@@ -277,8 +277,9 @@ module IdpRails
     #
     # A live event and a replayed one are the same three facts, so they take
     # the same path — the catch-up cannot drift from the subscriber it is
-    # backstopping. Symbol keys are accepted because the catch-up callable
-    # belongs to the app, and JSON parsers there commonly symbolize.
+    # backstopping. Either spelling of the keys is read: the live event is
+    # JSON with string keys, while the catch-up callable belongs to the app,
+    # and JSON parsers there commonly symbolize.
     #
     # idp stamps `revoked_at` off the same clock that stamps `iat`, so the two
     # compare exactly. An unreadable or absent stamp falls back to now, which
@@ -288,15 +289,21 @@ module IdpRails
     # `sid` names the session idp actually ended. Absent, the revocation is
     # subject-wide — either one that genuinely ends everything, or an idp too
     # old to say which session, and both must fail closed.
+    #
+    # Anything that is not a mapping is refused rather than raised on. A
+    # garbled payload must cost one message, never the subscribe loop it
+    # arrived on.
     def apply(data)
-      data = data.to_h.transform_keys(&:to_s) if data.respond_to?(:to_h)
+      data = data.to_h if data.respond_to?(:to_h) && !data.is_a?(Array)
       return false unless data.is_a?(Hash)
 
-      user_uuid = data["sub"]
+      user_uuid = data["sub"] || data[:sub]
       return false unless user_uuid
 
-      sid = data["sid"].to_s.empty? ? ALL_SESSIONS : data["sid"]
-      block!(user_uuid, revoked_at: data["revoked_at"], sid: sid)
+      sid = (data["sid"] || data[:sid]).to_s
+      block!(user_uuid,
+             revoked_at: data["revoked_at"] || data[:revoked_at],
+             sid: sid.empty? ? ALL_SESSIONS : sid)
       true
     end
 
