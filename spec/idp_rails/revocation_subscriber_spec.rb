@@ -186,4 +186,127 @@ RSpec.describe IdpRails::RevocationSubscriber do
       expect(subscriber.revoked?('usr_b')).to be false
     end
   end
+
+  describe 'the shared blocklist' do
+    # Stands in for the handful of commands the blocklist uses — real enough to
+    # catch key naming, TTL arithmetic and the rehydration round-trip, and
+    # deliberately not a Redis.
+    let(:store) do
+      Class.new do
+        attr_reader :hashes
+
+        def initialize
+          @hashes = {}
+          @expiry = {}
+        end
+
+        def hset(key, field, value)
+          (@hashes[key] ||= {})[field.to_s] = value.to_s
+        end
+
+        def hgetall(key)
+          (@hashes[key] || {}).dup
+        end
+
+        def ttl(key)
+          return -2 unless @hashes.key?(key)
+
+          @expiry.fetch(key, -1)
+        end
+
+        def expire(key, seconds)
+          @expiry[key] = seconds
+        end
+
+        def del(key)
+          @hashes.delete(key)
+          @expiry.delete(key)
+        end
+
+        def scan(_cursor, match:, count:) # rubocop:disable Lint/UnusedMethodArgument
+          [ '0', @hashes.keys.select { |key| File.fnmatch(match, key) } ]
+        end
+      end.new
+    end
+
+    subject(:subscriber) { described_class.new(store: store) }
+
+    it 'writes a session-scoped revocation through to the store' do
+      subscriber.block!('usr_abc', revoked_at: 1_700_000_000, sid: 'sess_1', ttl: 900)
+
+      expect(store.hashes['revocations:usr_abc']).to eq('sess_1' => '1700000000')
+      expect(store.ttl('revocations:usr_abc')).to eq(900)
+    end
+
+    it 'files a subject-wide revocation under the all-sessions field' do
+      subscriber.block!('usr_abc', revoked_at: 1_700_000_000)
+
+      expect(store.hashes['revocations:usr_abc']).to eq('*' => '1700000000')
+    end
+
+    it 'namespaces its keys so two apps on one Redis do not collide' do
+      IdpRails.configuration.cache_redis_namespace = 'idp_sessions_crm'
+
+      described_class.new(store: store).block!('usr_abc')
+
+      expect(store.hashes.keys).to eq([ 'idp_sessions_crm:revocations:usr_abc' ])
+    end
+
+    # The key must outlive the newest token any of its cutoffs still covers.
+    it 'lets a longer window extend the key, and a shorter one leave it alone' do
+      subscriber.block!('usr_abc', ttl: 900)
+      subscriber.block!('usr_abc', ttl: 60)
+      expect(store.ttl('revocations:usr_abc')).to eq(900)
+
+      subscriber.block!('usr_abc', ttl: 1800)
+      expect(store.ttl('revocations:usr_abc')).to eq(1800)
+    end
+
+    it 'drops the key when the subject authenticates again' do
+      subscriber.block!('usr_abc')
+      subscriber.unblock!('usr_abc')
+
+      expect(store.hashes).to be_empty
+    end
+
+    # The point of the whole exercise: pub/sub replays nothing, so a process
+    # that was down when the event went out used to honour the revoked token
+    # for the rest of its life. #start reads the blocklist back before serving
+    # its first request — which is what rehydrate! does here.
+    it 'restores a revocation this process never received' do
+      described_class.new(store: store)
+        .block!('usr_abc', revoked_at: 1_700_000_000, sid: 'sess_1', ttl: 900)
+
+      restarted = described_class.new(store: store)
+      expect(restarted.revoked?('usr_abc', issued_at: 1_699_999_999, sid: 'sess_1')).to be false
+
+      restarted.send(:rehydrate!)
+
+      expect(restarted.revoked?('usr_abc', issued_at: 1_699_999_999, sid: 'sess_1')).to be true
+      expect(restarted.revoked?('usr_abc', issued_at: 1_700_000_001, sid: 'sess_1')).to be false
+    end
+
+    it 'ignores a stored entry with no expiry rather than blocking forever' do
+      store.hset('revocations:usr_ghost', '*', '1700000000')
+
+      restarted = described_class.new(store: store)
+      restarted.send(:rehydrate!)
+
+      expect(restarted.revoked?('usr_ghost')).to be false
+    end
+
+    it 'keeps blocking in memory when the store cannot be written' do
+      allow(store).to receive(:hset).and_raise(RuntimeError, 'connection refused')
+
+      subscriber.block!('usr_abc')
+
+      expect(subscriber.revoked?('usr_abc')).to be true
+    end
+
+    it 'keeps serving when the store cannot be read at startup' do
+      allow(store).to receive(:scan).and_raise(RuntimeError, 'connection refused')
+
+      expect { described_class.new(store: store).send(:rehydrate!) }.not_to raise_error
+    end
+  end
 end

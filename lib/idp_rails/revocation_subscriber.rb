@@ -47,7 +47,19 @@ module IdpRails
     # session, so it covers every token the subject holds.
     ALL_SESSIONS = nil
 
-    def initialize(redis: nil, channel: nil, config: IdpRails.configuration)
+    # How ALL_SESSIONS is spelled in the Redis hash, which has no nil field
+    # name. idp's sids are alphanumeric, so this cannot collide with one.
+    ALL_SESSIONS_FIELD = "*"
+
+    # Key segment the shared blocklist lives under, after the configured
+    # namespace: "<namespace>:revocations:<user_uuid>".
+    REVOCATION_KEY_SEGMENT = "revocations"
+
+    # @param store [Object, nil] a ready Redis-compatible connection for the
+    #   shared blocklist. Built from the redis config when omitted; passing one
+    #   is how an app hands over a pooled connection (and how specs hand over a
+    #   double), never the connection SUBSCRIBE is blocking.
+    def initialize(redis: nil, channel: nil, config: IdpRails.configuration, store: nil)
       super() # MonitorMixin
       @config = config
       @redis_config = redis || config.redis
@@ -58,6 +70,9 @@ module IdpRails
       @thread = nil
       @running = false
       @bunny_connection = nil
+      # A SECOND connection, distinct from the one subscribe_loop_redis blocks
+      # in SUBSCRIBE: a subscribed connection accepts no other commands.
+      @store_redis = store || build_store_redis
     end
 
     # Is the given token revoked? The subject names WHOSE tokens were revoked,
@@ -95,7 +110,17 @@ module IdpRails
     end
 
     # Start the background subscriber thread.
+    #
+    # Rehydrates first. Revocations arrive over pub/sub, which replays nothing:
+    # a process that was starting, deploying or reconnecting when one was
+    # published never hears about it, and until now that meant honouring a
+    # revoked token for the rest of its lifetime. Reading the shared blocklist
+    # back before the first request lands closes that for every restart with a
+    # live sibling — the one gap left is every process being down at once, which
+    # needs idp to be re-askable rather than a store to be re-read.
     def start
+      rehydrate!
+
       synchronize do
         return if @running
 
@@ -138,27 +163,34 @@ module IdpRails
     # everywhere) — which is also what an idp too old to publish `sid` means.
     def block!(user_uuid, ttl: nil, revoked_at: nil, sid: ALL_SESSIONS)
       cutoff = to_unix(revoked_at) || Time.now.to_i
+      retention = ttl || @config.blocklist_ttl
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + retention
 
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + (ttl || @config.blocklist_ttl)
-
-      synchronize do
+      merged = synchronize do
         entry = @blocklist[user_uuid] || { deadline: deadline, cutoffs: {} }
         # Overlapping revocations: the widest window and, per session, the
         # latest cutoff win, so an earlier event can never narrow a later one.
         entry[:deadline] = [ deadline, entry[:deadline] ].max
         entry[:cutoffs][sid] = [ cutoff, entry[:cutoffs][sid] ].compact.max
         @blocklist[user_uuid] = entry
+        entry[:cutoffs][sid]
       end
+
+      persist(user_uuid, sid, merged, retention)
     end
 
     # Remove a user from the blocklist (e.g., after a fresh login).
     def unblock!(user_uuid)
       synchronize { @blocklist.delete(user_uuid) }
+      forget(user_uuid)
     end
 
     # Clear the blocklist (useful for testing).
     def clear!
       synchronize { @blocklist = {} }
+      each_stored_key { |key| @store_redis.del(key) }
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not clear stored revocations: #{e.message}")
     end
 
     private
@@ -274,6 +306,105 @@ module IdpRails
           end
         end
       end
+    end
+
+    # --- Shared blocklist ---------------------------------------------------
+    #
+    # The in-memory blocklist is per-process, so on its own it forgets every
+    # revocation the instant a pod restarts. These keep a copy where the next
+    # process can find it: one hash per subject, field = sid (or
+    # ALL_SESSIONS_FIELD), value = that session's cutoff, and the key's TTL
+    # carrying the retention window so an entry lapses in Redis exactly as it
+    # does in memory.
+    #
+    # Every one of them degrades to a warning. An unreachable Redis costs
+    # durability; it must never cost the in-memory blocklist already doing its
+    # job on this process.
+
+    def persist(user_uuid, sid, cutoff, retention)
+      return unless @store_redis
+
+      key = store_key(user_uuid)
+      @store_redis.hset(key, sid || ALL_SESSIONS_FIELD, cutoff)
+      # The key has to outlive the newest token any of its cutoffs could still
+      # cover, so a longer window extends it and a shorter one leaves it be.
+      current = @store_redis.ttl(key)
+      @store_redis.expire(key, retention) if current.nil? || current < retention
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not persist revocation for #{user_uuid}: #{e.message}")
+    end
+
+    def forget(user_uuid)
+      return unless @store_redis
+
+      @store_redis.del(store_key(user_uuid))
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not drop stored revocation for #{user_uuid}: #{e.message}")
+    end
+
+    def rehydrate!
+      return unless @store_redis
+
+      restored = 0
+      each_stored_key do |key|
+        ttl = @store_redis.ttl(key)
+        next unless ttl.is_a?(Integer) && ttl.positive?
+
+        cutoffs = @store_redis.hgetall(key)
+        next if cutoffs.nil? || cutoffs.empty?
+
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl
+        synchronize do
+          @blocklist[key.delete_prefix(store_key_prefix)] = {
+            deadline: deadline,
+            cutoffs: cutoffs.to_h do |field, value|
+              [ field == ALL_SESSIONS_FIELD ? ALL_SESSIONS : field, value.to_i ]
+            end
+          }
+        end
+        restored += 1
+      end
+
+      @config.logger.info("[IdpRails] Rehydrated #{restored} revocation(s) from the shared blocklist") if restored.positive?
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not rehydrate revocations: #{e.message}")
+    end
+
+    def each_stored_key
+      return unless @store_redis
+
+      cursor = "0"
+      loop do
+        cursor, keys = @store_redis.scan(cursor, match: "#{store_key_prefix}*", count: 100)
+        Array(keys).each { |key| yield key }
+        break if cursor.to_s == "0"
+      end
+    end
+
+    def store_key(user_uuid)
+      "#{store_key_prefix}#{user_uuid}"
+    end
+
+    def store_key_prefix
+      @store_key_prefix ||=
+        if @config.cache_redis_namespace
+          "#{@config.cache_redis_namespace}:#{REVOCATION_KEY_SEGMENT}:"
+        else
+          "#{REVOCATION_KEY_SEGMENT}:"
+        end
+    end
+
+    # A connection of its own, and only if the redis gem is actually there:
+    # a RabbitMQ deployment never loads it, and losing durability is a warning
+    # rather than a boot failure.
+    def build_store_redis
+      return nil unless @redis_config
+
+      require "redis"
+      build_redis
+    rescue LoadError
+      @config.logger.warn("[IdpRails] redis gem unavailable — revocations will not survive a restart")
+      nil
     end
 
     def build_redis
