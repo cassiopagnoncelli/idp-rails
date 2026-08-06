@@ -54,21 +54,42 @@ module IdpRails
 
     # Verify a JWT and return a Passport.
     #
+    # Inside a Rails app this checks revocation against the subscriber the
+    # Railtie (or an app initializer) stashed on the application config, so
+    # a revoked token is refused here the same as anywhere else. Pass
+    # revocation_subscriber: to override — explicitly nil skips the check.
+    #
     # @param token [String] raw JWT string (with or without "Bearer " prefix)
+    # @param revocation_subscriber [RevocationSubscriber, nil]
     # @return [Passport]
     # @raise [VerificationError]
-    def verify!(token)
-      Verifier.new.verify!(token)
+    def verify!(token, revocation_subscriber: default_revocation_subscriber)
+      Verifier.new(revocation_subscriber: revocation_subscriber).verify!(token)
     end
 
     # Verify a JWT, returning nil instead of raising on failure.
     #
     # @param token [String]
+    # @param revocation_subscriber [RevocationSubscriber, nil]
     # @return [Passport, nil]
-    def verify(token)
-      verify!(token)
+    def verify(token, revocation_subscriber: default_revocation_subscriber)
+      verify!(token, revocation_subscriber: revocation_subscriber)
     rescue VerificationError
       nil
+    end
+
+    # The RevocationSubscriber stashed at
+    # Rails.application.config.idp_rails_revocation_subscriber, or nil
+    # outside Rails / when none was started (no transport configured).
+    # Resolved on every call, not at load: the stash appears during boot,
+    # after this file is long required.
+    def default_revocation_subscriber
+      return nil unless defined?(::Rails) && ::Rails.respond_to?(:application)
+
+      config = ::Rails.application&.config
+      return nil unless config.respond_to?(:idp_rails_revocation_subscriber)
+
+      config.idp_rails_revocation_subscriber
     end
 
     def reset_configuration!

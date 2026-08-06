@@ -250,7 +250,7 @@ IdpRails.configure do |c|
 end
 ```
 
-The Railtie starts the subscriber automatically on boot and stops it on shutdown.
+The Railtie starts the subscriber automatically on boot and stops it on shutdown. The module helpers `IdpRails.verify` / `IdpRails.verify!` use it automatically (since 2.8.0 — before that they skipped revocation entirely, so callers had to build a `Verifier` by hand). Pass `revocation_subscriber:` to override; an explicit `nil` skips the check.
 
 Without Rails, manage it manually:
 
