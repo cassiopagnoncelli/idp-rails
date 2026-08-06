@@ -47,17 +47,39 @@ module IdpRails
     # session, so it covers every token the subject holds.
     ALL_SESSIONS = nil
 
-    def initialize(redis: nil, channel: nil, config: IdpRails.configuration)
+    # How ALL_SESSIONS is spelled in the Redis hash, which has no nil field
+    # name. idp's sids are alphanumeric, so this cannot collide with one.
+    ALL_SESSIONS_FIELD = "*"
+
+    # Key segment the shared blocklist lives under, after the configured
+    # namespace: "<namespace>:revocations:<user_uuid>".
+    REVOCATION_KEY_SEGMENT = "revocations"
+
+    # @param store [Object, nil] a ready Redis-compatible connection for the
+    #   shared blocklist. Built from the redis config when omitted; passing one
+    #   is how an app hands over a pooled connection (and how specs hand over a
+    #   double), never the connection SUBSCRIBE is blocking.
+    # @param catch_up [#call, nil] asks idp for the revocations of a window —
+    #   see #catch_up!. Injected rather than built here on purpose: fetching it
+    #   needs a service client's id, secret and token endpoint, and a
+    #   verification library has no business carrying credential config. The
+    #   consuming app already has that client; it passes a callable that uses it.
+    def initialize(redis: nil, channel: nil, config: IdpRails.configuration, store: nil,
+                   catch_up: nil)
       super() # MonitorMixin
       @config = config
       @redis_config = redis || config.redis
       @rabbitmq_url = config.rabbitmq_url
       @channel = channel || config.revocation_channel
+      @catch_up = catch_up || config.revocation_catch_up
       # { "usr_xxx" => { deadline: <monotonic>, cutoffs: { sid_or_nil => <unix secs> } } }
       @blocklist = {}
       @thread = nil
       @running = false
       @bunny_connection = nil
+      # A SECOND connection, distinct from the one subscribe_loop_redis blocks
+      # in SUBSCRIBE: a subscribed connection accepts no other commands.
+      @store_redis = store || build_store_redis
     end
 
     # Is the given token revoked? The subject names WHOSE tokens were revoked,
@@ -95,7 +117,24 @@ module IdpRails
     end
 
     # Start the background subscriber thread.
+    #
+    # Rehydrates first, then catches up. Revocations arrive over pub/sub, which
+    # replays nothing: a process that was starting, deploying or reconnecting
+    # when one was published never hears about it, and that once meant honouring
+    # a revoked token for the rest of its lifetime.
+    #
+    # Reading the shared blocklist back covers every restart with a LIVE
+    # SIBLING — some process received the event and wrote it through. Asking
+    # idp covers the case no store can: every process down at once, so nobody
+    # was there to write anything through and the event is simply gone.
+    #
+    # Both run before the subscriber thread exists, and therefore before the
+    # first request can land. That ordering is the point — a blocklist filled
+    # in afterwards would leave open exactly the window being closed.
     def start
+      rehydrate!
+      catch_up!
+
       synchronize do
         return if @running
 
@@ -138,27 +177,34 @@ module IdpRails
     # everywhere) — which is also what an idp too old to publish `sid` means.
     def block!(user_uuid, ttl: nil, revoked_at: nil, sid: ALL_SESSIONS)
       cutoff = to_unix(revoked_at) || Time.now.to_i
+      retention = ttl || @config.blocklist_ttl
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + retention
 
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + (ttl || @config.blocklist_ttl)
-
-      synchronize do
+      merged = synchronize do
         entry = @blocklist[user_uuid] || { deadline: deadline, cutoffs: {} }
         # Overlapping revocations: the widest window and, per session, the
         # latest cutoff win, so an earlier event can never narrow a later one.
         entry[:deadline] = [ deadline, entry[:deadline] ].max
         entry[:cutoffs][sid] = [ cutoff, entry[:cutoffs][sid] ].compact.max
         @blocklist[user_uuid] = entry
+        entry[:cutoffs][sid]
       end
+
+      persist(user_uuid, sid, merged, retention)
     end
 
     # Remove a user from the blocklist (e.g., after a fresh login).
     def unblock!(user_uuid)
       synchronize { @blocklist.delete(user_uuid) }
+      forget(user_uuid)
     end
 
     # Clear the blocklist (useful for testing).
     def clear!
       synchronize { @blocklist = {} }
+      each_stored_key { |key| @store_redis.del(key) }
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not clear stored revocations: #{e.message}")
     end
 
     private
@@ -218,25 +264,78 @@ module IdpRails
 
     def handle_message(message)
       data = JSON.parse(message)
-      user_uuid = data["sub"]
-      return unless user_uuid
+      return unless apply(data)
 
-      # idp stamps `revoked_at` off the same clock that stamps `iat`, so the
-      # two compare exactly. A publisher old enough not to send it falls back
-      # to arrival, which delivery latency keeps within milliseconds of the
-      # revocation — and never widens the window the way a skew cushion here
-      # would, since that would re-refuse the fast re-login this exists to
-      # let through.
-      #
-      # `sid` names the session idp actually ended. Absent, the event is
-      # subject-wide — either a revocation that genuinely ends everything, or
-      # an idp too old to say which session, and both must fail closed.
       sid = data["sid"].to_s.empty? ? ALL_SESSIONS : data["sid"]
-      block!(user_uuid, revoked_at: data["revoked_at"], sid: sid)
       scope = sid ? "session #{sid}" : "all sessions"
-      @config.logger.info("[IdpRails] User revoked: #{user_uuid} (#{scope}, reason: #{data['reason']})")
+      @config.logger.info("[IdpRails] User revoked: #{data['sub']} (#{scope}, reason: #{data['reason']})")
     rescue JSON::ParserError => e
       @config.logger.warn("[IdpRails] Invalid revocation message: #{e.message}")
+    end
+
+    # Records one revocation, whichever way it arrived.
+    #
+    # A live event and a replayed one are the same three facts, so they take
+    # the same path — the catch-up cannot drift from the subscriber it is
+    # backstopping. Either spelling of the keys is read: the live event is
+    # JSON with string keys, while the catch-up callable belongs to the app,
+    # and JSON parsers there commonly symbolize.
+    #
+    # idp stamps `revoked_at` off the same clock that stamps `iat`, so the two
+    # compare exactly. An unreadable or absent stamp falls back to now, which
+    # fails closed: the subject re-authenticates and the fresh token, issued
+    # after the cutoff, is honoured.
+    #
+    # `sid` names the session idp actually ended. Absent, the revocation is
+    # subject-wide — either one that genuinely ends everything, or an idp too
+    # old to say which session, and both must fail closed.
+    #
+    # Anything that is not a mapping is refused rather than raised on. A
+    # garbled payload must cost one message, never the subscribe loop it
+    # arrived on.
+    def apply(data)
+      data = data.to_h if data.respond_to?(:to_h) && !data.is_a?(Array)
+      return false unless data.is_a?(Hash)
+
+      user_uuid = data["sub"] || data[:sub]
+      return false unless user_uuid
+
+      sid = (data["sid"] || data[:sid]).to_s
+      block!(user_uuid,
+             revoked_at: data["revoked_at"] || data[:revoked_at],
+             sid: sid.empty? ? ALL_SESSIONS : sid)
+      true
+    end
+
+    # Ask idp for the revocations of the window this blocklist retains, and
+    # record the ones this process never heard.
+    #
+    # The last durability gap. Pub/sub is fire-and-forget, and the shared
+    # blocklist is only ever written by a process that RECEIVED an event — so
+    # when every consumer process was down at once, nobody wrote anything
+    # through and the revocation is gone from both. idp still has it, because
+    # every publish site stamps the row before it publishes. The fix is to ask.
+    #
+    # The callable takes the window start as unix seconds and returns the
+    # revocations from it onwards — an enumerable of { sub:, sid:, revoked_at: },
+    # the same three facts a live event carries. It is the app's, not the
+    # gem's: fetching them needs a service client's credentials, and a
+    # verification library has no business holding those.
+    #
+    # Degrades to a warning, like everything else on this path. An idp that
+    # cannot be reached at boot costs this process the events it missed; it
+    # must never cost it the ability to start.
+    def catch_up!
+      return unless @catch_up
+
+      since = Time.now.to_i - @config.blocklist_ttl
+      applied = Array(@catch_up.call(since)).count { |entry| apply(entry) }
+
+      @config.logger.info(
+        "[IdpRails] Caught up #{applied} revocation(s) from idp since #{since}"
+      )
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not catch up on revocations: #{e.message}")
     end
 
     # Do any of a subject's live revocations cover this token?
@@ -274,6 +373,105 @@ module IdpRails
           end
         end
       end
+    end
+
+    # --- Shared blocklist ---------------------------------------------------
+    #
+    # The in-memory blocklist is per-process, so on its own it forgets every
+    # revocation the instant a pod restarts. These keep a copy where the next
+    # process can find it: one hash per subject, field = sid (or
+    # ALL_SESSIONS_FIELD), value = that session's cutoff, and the key's TTL
+    # carrying the retention window so an entry lapses in Redis exactly as it
+    # does in memory.
+    #
+    # Every one of them degrades to a warning. An unreachable Redis costs
+    # durability; it must never cost the in-memory blocklist already doing its
+    # job on this process.
+
+    def persist(user_uuid, sid, cutoff, retention)
+      return unless @store_redis
+
+      key = store_key(user_uuid)
+      @store_redis.hset(key, sid || ALL_SESSIONS_FIELD, cutoff)
+      # The key has to outlive the newest token any of its cutoffs could still
+      # cover, so a longer window extends it and a shorter one leaves it be.
+      current = @store_redis.ttl(key)
+      @store_redis.expire(key, retention) if current.nil? || current < retention
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not persist revocation for #{user_uuid}: #{e.message}")
+    end
+
+    def forget(user_uuid)
+      return unless @store_redis
+
+      @store_redis.del(store_key(user_uuid))
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not drop stored revocation for #{user_uuid}: #{e.message}")
+    end
+
+    def rehydrate!
+      return unless @store_redis
+
+      restored = 0
+      each_stored_key do |key|
+        ttl = @store_redis.ttl(key)
+        next unless ttl.is_a?(Integer) && ttl.positive?
+
+        cutoffs = @store_redis.hgetall(key)
+        next if cutoffs.nil? || cutoffs.empty?
+
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + ttl
+        synchronize do
+          @blocklist[key.delete_prefix(store_key_prefix)] = {
+            deadline: deadline,
+            cutoffs: cutoffs.to_h do |field, value|
+              [ field == ALL_SESSIONS_FIELD ? ALL_SESSIONS : field, value.to_i ]
+            end
+          }
+        end
+        restored += 1
+      end
+
+      @config.logger.info("[IdpRails] Rehydrated #{restored} revocation(s) from the shared blocklist") if restored.positive?
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not rehydrate revocations: #{e.message}")
+    end
+
+    def each_stored_key
+      return unless @store_redis
+
+      cursor = "0"
+      loop do
+        cursor, keys = @store_redis.scan(cursor, match: "#{store_key_prefix}*", count: 100)
+        Array(keys).each { |key| yield key }
+        break if cursor.to_s == "0"
+      end
+    end
+
+    def store_key(user_uuid)
+      "#{store_key_prefix}#{user_uuid}"
+    end
+
+    def store_key_prefix
+      @store_key_prefix ||=
+        if @config.cache_redis_namespace
+          "#{@config.cache_redis_namespace}:#{REVOCATION_KEY_SEGMENT}:"
+        else
+          "#{REVOCATION_KEY_SEGMENT}:"
+        end
+    end
+
+    # A connection of its own, and only if the redis gem is actually there:
+    # a RabbitMQ deployment never loads it, and losing durability is a warning
+    # rather than a boot failure.
+    def build_store_redis
+      return nil unless @redis_config
+
+      require "redis"
+      build_redis
+    rescue LoadError
+      @config.logger.warn("[IdpRails] redis gem unavailable — revocations will not survive a restart")
+      nil
     end
 
     def build_redis

@@ -174,6 +174,15 @@ RSpec.describe IdpRails::RevocationSubscriber do
       deliver(reason: 'session_revoked')
       expect(subscriber.revoked?(nil)).to be false
     end
+
+    # A garbled payload costs one message, never the subscribe loop it arrived
+    # on — the loop's only rescue logs and RETURNS, so a raise here would stop
+    # the process hearing revocations at all.
+    it 'refuses a payload that is not a mapping rather than raising' do
+      expect { deliver([ 1, 2 ]) }.not_to raise_error
+      expect { deliver('a bare string') }.not_to raise_error
+      expect { subscriber.send(:handle_message, 'not json at all') }.not_to raise_error
+    end
   end
 
   describe '#clear!' do
@@ -184,6 +193,241 @@ RSpec.describe IdpRails::RevocationSubscriber do
 
       expect(subscriber.revoked?('usr_a')).to be false
       expect(subscriber.revoked?('usr_b')).to be false
+    end
+  end
+
+  describe 'the shared blocklist' do
+    # Stands in for the handful of commands the blocklist uses — real enough to
+    # catch key naming, TTL arithmetic and the rehydration round-trip, and
+    # deliberately not a Redis.
+    let(:store) do
+      Class.new do
+        attr_reader :hashes
+
+        def initialize
+          @hashes = {}
+          @expiry = {}
+        end
+
+        def hset(key, field, value)
+          (@hashes[key] ||= {})[field.to_s] = value.to_s
+        end
+
+        def hgetall(key)
+          (@hashes[key] || {}).dup
+        end
+
+        def ttl(key)
+          return -2 unless @hashes.key?(key)
+
+          @expiry.fetch(key, -1)
+        end
+
+        def expire(key, seconds)
+          @expiry[key] = seconds
+        end
+
+        def del(key)
+          @hashes.delete(key)
+          @expiry.delete(key)
+        end
+
+        def scan(_cursor, match:, count:) # rubocop:disable Lint/UnusedMethodArgument
+          [ '0', @hashes.keys.select { |key| File.fnmatch(match, key) } ]
+        end
+      end.new
+    end
+
+    subject(:subscriber) { described_class.new(store: store) }
+
+    it 'writes a session-scoped revocation through to the store' do
+      subscriber.block!('usr_abc', revoked_at: 1_700_000_000, sid: 'sess_1', ttl: 900)
+
+      expect(store.hashes['revocations:usr_abc']).to eq('sess_1' => '1700000000')
+      expect(store.ttl('revocations:usr_abc')).to eq(900)
+    end
+
+    it 'files a subject-wide revocation under the all-sessions field' do
+      subscriber.block!('usr_abc', revoked_at: 1_700_000_000)
+
+      expect(store.hashes['revocations:usr_abc']).to eq('*' => '1700000000')
+    end
+
+    it 'namespaces its keys so two apps on one Redis do not collide' do
+      IdpRails.configuration.cache_redis_namespace = 'idp_sessions_crm'
+
+      described_class.new(store: store).block!('usr_abc')
+
+      expect(store.hashes.keys).to eq([ 'idp_sessions_crm:revocations:usr_abc' ])
+    end
+
+    # The key must outlive the newest token any of its cutoffs still covers.
+    it 'lets a longer window extend the key, and a shorter one leave it alone' do
+      subscriber.block!('usr_abc', ttl: 900)
+      subscriber.block!('usr_abc', ttl: 60)
+      expect(store.ttl('revocations:usr_abc')).to eq(900)
+
+      subscriber.block!('usr_abc', ttl: 1800)
+      expect(store.ttl('revocations:usr_abc')).to eq(1800)
+    end
+
+    it 'drops the key when the subject authenticates again' do
+      subscriber.block!('usr_abc')
+      subscriber.unblock!('usr_abc')
+
+      expect(store.hashes).to be_empty
+    end
+
+    # The point of the whole exercise: pub/sub replays nothing, so a process
+    # that was down when the event went out used to honour the revoked token
+    # for the rest of its life. #start reads the blocklist back before serving
+    # its first request — which is what rehydrate! does here.
+    it 'restores a revocation this process never received' do
+      described_class.new(store: store)
+        .block!('usr_abc', revoked_at: 1_700_000_000, sid: 'sess_1', ttl: 900)
+
+      restarted = described_class.new(store: store)
+      expect(restarted.revoked?('usr_abc', issued_at: 1_699_999_999, sid: 'sess_1')).to be false
+
+      restarted.send(:rehydrate!)
+
+      expect(restarted.revoked?('usr_abc', issued_at: 1_699_999_999, sid: 'sess_1')).to be true
+      expect(restarted.revoked?('usr_abc', issued_at: 1_700_000_001, sid: 'sess_1')).to be false
+    end
+
+    it 'ignores a stored entry with no expiry rather than blocking forever' do
+      store.hset('revocations:usr_ghost', '*', '1700000000')
+
+      restarted = described_class.new(store: store)
+      restarted.send(:rehydrate!)
+
+      expect(restarted.revoked?('usr_ghost')).to be false
+    end
+
+    it 'keeps blocking in memory when the store cannot be written' do
+      allow(store).to receive(:hset).and_raise(RuntimeError, 'connection refused')
+
+      subscriber.block!('usr_abc')
+
+      expect(subscriber.revoked?('usr_abc')).to be true
+    end
+
+    it 'keeps serving when the store cannot be read at startup' do
+      allow(store).to receive(:scan).and_raise(RuntimeError, 'connection refused')
+
+      expect { described_class.new(store: store).send(:rehydrate!) }.not_to raise_error
+    end
+  end
+
+  # The gap the shared blocklist cannot close: it is only ever written by a
+  # process that RECEIVED an event, so when every consumer process was down at
+  # once, nobody wrote anything through and the revocation is gone from both
+  # memory and Redis. idp still has it, so the subscriber asks.
+  describe 'catching up from idp' do
+    let(:asked) { [] }
+    let(:revoked_at) { Time.now - 300 }
+    let(:entries) do
+      [ { 'sub' => 'usr_missed', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 } ]
+    end
+    let(:catch_up) { ->(since) { asked << since; entries } }
+
+    subject(:subscriber) { described_class.new(catch_up: catch_up) }
+
+    it 'blocks a revocation no process was up to receive' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+    end
+
+    # The replayed cutoff has to mean what the live one means, or a user who
+    # signed straight back in is refused the passport they just collected.
+    it 'honours the cutoff it was given rather than the moment it asked' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at + 1, sid: 'sess_1')).to be false
+    end
+
+    it 'leaves the subject other sessions alone' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_2')).to be false
+    end
+
+    it 'asks for the window the blocklist retains' do
+      IdpRails.configuration.blocklist_ttl = 900
+
+      subscriber.send(:catch_up!)
+
+      expect(asked.first).to be_within(2).of(Time.now.to_i - 900)
+    end
+
+    it 'reads symbol keys, since the callable belongs to the app' do
+      entries.replace([ { sub: 'usr_sym', sid: 'sess_9', revoked_at: revoked_at.utc.iso8601 } ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_sym', issued_at: revoked_at - 1, sid: 'sess_9')).to be true
+    end
+
+    it 'treats a null sid as subject-wide' do
+      entries.replace([ { 'sub' => 'usr_wide', 'sid' => nil, 'revoked_at' => revoked_at.utc.iso8601 } ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_wide', issued_at: revoked_at - 1, sid: 'sess_any')).to be true
+    end
+
+    it 'skips entries with no subject rather than failing the whole catch-up' do
+      entries.replace([
+                        { 'sub' => nil, 'revoked_at' => revoked_at.utc.iso8601 },
+                        { 'sub' => 'usr_good', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 }
+                      ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_good', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+    end
+
+    # An idp that cannot be reached costs this process the events it missed. It
+    # must never cost it the ability to start.
+    it 'starts anyway when idp cannot be reached' do
+      failing = described_class.new(catch_up: ->(_since) { raise 'connection refused' })
+
+      expect { failing.send(:catch_up!) }.not_to raise_error
+    end
+
+    it 'is skipped, not guessed at, when no callable is wired' do
+      expect { described_class.new.send(:catch_up!) }.not_to raise_error
+    end
+
+    it 'can be wired through configuration instead of the constructor' do
+      IdpRails.configuration.revocation_catch_up = catch_up
+
+      described_class.new.send(:catch_up!)
+
+      expect(asked.size).to eq(1)
+    end
+
+    # Ordering is the whole point: both fills happen before the subscriber
+    # thread exists, and therefore before the first request can land.
+    it 'runs at start, on top of the rehydrated blocklist and before serving' do
+      allow(Thread).to receive(:new).and_return(instance_double(Thread, :abort_on_exception= => nil))
+
+      rehydrated_first = nil
+      started = described_class.new(
+        catch_up: lambda { |_since|
+          rehydrated_first = started.revoked?('usr_stored', issued_at: revoked_at - 1, sid: 'sess_0')
+          entries
+        }
+      )
+      allow(started).to receive(:rehydrate!) do
+        started.block!('usr_stored', revoked_at: revoked_at.to_i, sid: 'sess_0')
+      end
+
+      started.start
+
+      expect(rehydrated_first).to be true
+      expect(started.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
     end
   end
 end

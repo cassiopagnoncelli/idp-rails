@@ -6,6 +6,7 @@ require "json"
 require "openssl"
 
 require_relative "idp_rails/version"
+require_relative "idp_rails/discovery"
 require_relative "idp_rails/configuration"
 require_relative "idp_rails/jwks_client"
 require_relative "idp_rails/passport"

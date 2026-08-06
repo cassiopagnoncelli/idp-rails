@@ -19,17 +19,30 @@ For Rails apps, require the Rails integration instead of the base library:
 require "idp_rails/rails"
 ```
 
-The Railtie auto-configures from environment variables (`IDP_JWKS_URL`, `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
+The Railtie auto-configures from environment variables (`IDP_URL`, or the older `IDP_JWKS_URL` / `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
 
 ## Configuration
 
+`discovery_url` is the short version: point it at idp and the JWKS endpoint,
+issuer and RP-initiated logout endpoint all come from the document idp already
+publishes, instead of from three settings that can drift apart. Anything set
+explicitly still wins, so a consumer can adopt it on its own schedule.
+
 ```ruby
 IdpRails.configure do |c|
-  # Required: the Idp JWKS endpoint.
+  # idp's base url. With it, jwks_url / issuer / end_session_endpoint are
+  # optional — they resolve from /.well-known/openid-configuration.
+  c.discovery_url = "https://account.yourcompany.com"
+
+  # Required unless discovery_url is set: the Idp JWKS endpoint.
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
 
-  # Required: must match the `iss` claim in tokens.
+  # Must match the `iss` claim in tokens. Published by discovery.
   c.issuer = "https://account.yourcompany.com"
+
+  # RP-initiated logout endpoint. Published by discovery; set it only when
+  # not using discovery.
+  # c.end_session_endpoint = "https://account.yourcompany.com/oauth/end_session"
 
   # Optional: the expected `aud` claim (idp's single platform audience).
   # Defaults to the issuer string, which matches idp's own default —
@@ -55,6 +68,11 @@ IdpRails.configure do |c|
 
   # Redis channel name for revocation events.
   c.revocation_channel = "idp:token_revocations"
+
+  # Optional: how the subscriber asks idp, at startup, for the revocations
+  # published while every process was down — the one case no store covers.
+  # See "Not missing an event". Default: nil (skipped).
+  # c.revocation_catch_up = ->(since) { IdpApiClient.revocations(since: since) }
 
   # HTTP timeouts for JWKS fetches (seconds).
   c.http_open_timeout = 5
@@ -236,8 +254,6 @@ Idp publishes to this channel when:
 - A session is ended (RP-initiated logout, `/oauth/revoke`, family replay)
 - An admin triggers emergency revocation
 
-If a sister app misses an event (restart, Redis blip), the access token still expires naturally within 15 minutes. This is a best-effort acceleration layer, not a hard guarantee.
-
 ```ruby
 IdpRails.configure do |c|
   c.redis = ENV["REDIS_URL"]   # enables the subscriber
@@ -251,6 +267,50 @@ end
 ```
 
 The Railtie starts the subscriber automatically on boot and stops it on shutdown. The module helpers `IdpRails.verify` / `IdpRails.verify!` use it automatically (since 2.8.0 — before that they skipped revocation entirely, so callers had to build a `Verifier` by hand). Pass `revocation_subscriber:` to override; an explicit `nil` skips the check.
+
+### Not missing an event
+
+Pub/sub replays nothing. Neither does the RabbitMQ path, which fans out to
+`exclusive: true, auto_delete: true` queues that stop existing the moment a
+consumer disconnects. A process that was starting, deploying or reconnecting
+when a revocation went out simply never hears about it — and used to honour the
+revoked token for the rest of its life. Three layers cover that, and each one
+closes a case the layer above cannot:
+
+| When the event is published | What saves it |
+|---|---|
+| Some sibling processes are up | They receive it normally |
+| This process restarts afterwards | The **shared blocklist** — every received revocation is mirrored into Redis, and `#start` reads it back before the subscriber thread exists |
+| **Every** consumer process is down | **The catch-up** — nobody was there to write anything through, so `#start` asks idp for the window instead |
+
+Both landed in 2.9.0; before it, a restart forgot every revocation it had not
+re-heard.
+
+The shared blocklist needs nothing but `cache_redis_namespace` (so two apps on
+one Redis do not collide). Entries expire there exactly as they do in memory.
+
+The catch-up needs a callable, because asking idp means holding a service
+client's credentials and this gem verifies tokens — it should not also be where
+secrets live. Point it at your own client:
+
+```ruby
+IdpRails.configure do |c|
+  # Called once at subscriber startup with the window start as unix seconds.
+  # Return the revocations from it onwards: an enumerable of
+  # { sub:, sid:, revoked_at: } — the same three facts a live event carries.
+  c.revocation_catch_up = ->(since) { IdpApiClient.revocations(since: since) }
+end
+```
+
+Behind it is idp's `GET /api/v1/revocations?since=<unix ts>`, gated on the
+`revocations:read` scope of a `client_credentials` grant. Leave the setting nil
+and the catch-up is skipped — everything else behaves as before.
+
+Both fills run *before* the subscriber thread is spawned, and therefore before
+the first request can land: a blocklist filled in afterwards would leave open
+exactly the window being closed. Both also degrade to a warning. An unreachable
+Redis or idp costs this process the events it missed; it must never cost it the
+ability to start.
 
 Without Rails, manage it manually:
 
