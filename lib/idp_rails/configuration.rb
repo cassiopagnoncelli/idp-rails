@@ -108,6 +108,25 @@ module IdpRails
     # @return [String]
     attr_accessor :revocation_channel
 
+    # Callable that asks idp for the revocations of a window, closing the one
+    # gap no store can: every consumer process down when an event was
+    # published, so nobody was there to write it through. The subscriber calls
+    # it once at startup with the window start as unix seconds, and expects the
+    # revocations from it onwards — an enumerable of { sub:, sid:, revoked_at: }
+    # (string or symbol keys), the same three facts a live event carries.
+    #
+    # A callable rather than a url and a client id here on purpose: fetching
+    # them means holding a service client's credentials, and this gem verifies
+    # tokens — it has no business also being where secrets live. The consuming
+    # app already has that client, so it passes a lambda that uses it.
+    #
+    #   c.revocation_catch_up = ->(since) { IdpApiClient.revocations(since: since) }
+    #
+    # Leave it nil to skip the catch-up: the in-memory blocklist and the shared
+    # one behave exactly as before.
+    # @return [#call, nil]
+    attr_accessor :revocation_catch_up
+
     # HTTP open timeout for JWKS fetches (seconds).
     # @return [Integer]
     attr_accessor :http_open_timeout
@@ -137,6 +156,7 @@ module IdpRails
       @cache_redis_namespace = nil
       @rabbitmq_url = nil
       @revocation_channel = "idp:token_revocations"
+      @revocation_catch_up = nil
       @http_open_timeout = 5
       @http_read_timeout = 5
       @logger = Logger.new(IO::NULL)

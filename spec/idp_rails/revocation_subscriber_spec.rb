@@ -309,4 +309,116 @@ RSpec.describe IdpRails::RevocationSubscriber do
       expect { described_class.new(store: store).send(:rehydrate!) }.not_to raise_error
     end
   end
+
+  # The gap the shared blocklist cannot close: it is only ever written by a
+  # process that RECEIVED an event, so when every consumer process was down at
+  # once, nobody wrote anything through and the revocation is gone from both
+  # memory and Redis. idp still has it, so the subscriber asks.
+  describe 'catching up from idp' do
+    let(:asked) { [] }
+    let(:revoked_at) { Time.now - 300 }
+    let(:entries) do
+      [ { 'sub' => 'usr_missed', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 } ]
+    end
+    let(:catch_up) { ->(since) { asked << since; entries } }
+
+    subject(:subscriber) { described_class.new(catch_up: catch_up) }
+
+    it 'blocks a revocation no process was up to receive' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+    end
+
+    # The replayed cutoff has to mean what the live one means, or a user who
+    # signed straight back in is refused the passport they just collected.
+    it 'honours the cutoff it was given rather than the moment it asked' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at + 1, sid: 'sess_1')).to be false
+    end
+
+    it 'leaves the subject other sessions alone' do
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_2')).to be false
+    end
+
+    it 'asks for the window the blocklist retains' do
+      IdpRails.configuration.blocklist_ttl = 900
+
+      subscriber.send(:catch_up!)
+
+      expect(asked.first).to be_within(2).of(Time.now.to_i - 900)
+    end
+
+    it 'reads symbol keys, since the callable belongs to the app' do
+      entries.replace([ { sub: 'usr_sym', sid: 'sess_9', revoked_at: revoked_at.utc.iso8601 } ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_sym', issued_at: revoked_at - 1, sid: 'sess_9')).to be true
+    end
+
+    it 'treats a null sid as subject-wide' do
+      entries.replace([ { 'sub' => 'usr_wide', 'sid' => nil, 'revoked_at' => revoked_at.utc.iso8601 } ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_wide', issued_at: revoked_at - 1, sid: 'sess_any')).to be true
+    end
+
+    it 'skips entries with no subject rather than failing the whole catch-up' do
+      entries.replace([
+                        { 'sub' => nil, 'revoked_at' => revoked_at.utc.iso8601 },
+                        { 'sub' => 'usr_good', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 }
+                      ])
+
+      subscriber.send(:catch_up!)
+
+      expect(subscriber.revoked?('usr_good', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+    end
+
+    # An idp that cannot be reached costs this process the events it missed. It
+    # must never cost it the ability to start.
+    it 'starts anyway when idp cannot be reached' do
+      failing = described_class.new(catch_up: ->(_since) { raise 'connection refused' })
+
+      expect { failing.send(:catch_up!) }.not_to raise_error
+    end
+
+    it 'is skipped, not guessed at, when no callable is wired' do
+      expect { described_class.new.send(:catch_up!) }.not_to raise_error
+    end
+
+    it 'can be wired through configuration instead of the constructor' do
+      IdpRails.configuration.revocation_catch_up = catch_up
+
+      described_class.new.send(:catch_up!)
+
+      expect(asked.size).to eq(1)
+    end
+
+    # Ordering is the whole point: both fills happen before the subscriber
+    # thread exists, and therefore before the first request can land.
+    it 'runs at start, on top of the rehydrated blocklist and before serving' do
+      allow(Thread).to receive(:new).and_return(instance_double(Thread, :abort_on_exception= => nil))
+
+      rehydrated_first = nil
+      started = described_class.new(
+        catch_up: lambda { |_since|
+          rehydrated_first = started.revoked?('usr_stored', issued_at: revoked_at - 1, sid: 'sess_0')
+          entries
+        }
+      )
+      allow(started).to receive(:rehydrate!) do
+        started.block!('usr_stored', revoked_at: revoked_at.to_i, sid: 'sess_0')
+      end
+
+      started.start
+
+      expect(rehydrated_first).to be true
+      expect(started.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+    end
+  end
 end

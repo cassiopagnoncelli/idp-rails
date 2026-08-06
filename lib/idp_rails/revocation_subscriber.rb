@@ -59,12 +59,19 @@ module IdpRails
     #   shared blocklist. Built from the redis config when omitted; passing one
     #   is how an app hands over a pooled connection (and how specs hand over a
     #   double), never the connection SUBSCRIBE is blocking.
-    def initialize(redis: nil, channel: nil, config: IdpRails.configuration, store: nil)
+    # @param catch_up [#call, nil] asks idp for the revocations of a window —
+    #   see #catch_up!. Injected rather than built here on purpose: fetching it
+    #   needs a service client's id, secret and token endpoint, and a
+    #   verification library has no business carrying credential config. The
+    #   consuming app already has that client; it passes a callable that uses it.
+    def initialize(redis: nil, channel: nil, config: IdpRails.configuration, store: nil,
+                   catch_up: nil)
       super() # MonitorMixin
       @config = config
       @redis_config = redis || config.redis
       @rabbitmq_url = config.rabbitmq_url
       @channel = channel || config.revocation_channel
+      @catch_up = catch_up || config.revocation_catch_up
       # { "usr_xxx" => { deadline: <monotonic>, cutoffs: { sid_or_nil => <unix secs> } } }
       @blocklist = {}
       @thread = nil
@@ -111,15 +118,22 @@ module IdpRails
 
     # Start the background subscriber thread.
     #
-    # Rehydrates first. Revocations arrive over pub/sub, which replays nothing:
-    # a process that was starting, deploying or reconnecting when one was
-    # published never hears about it, and until now that meant honouring a
-    # revoked token for the rest of its lifetime. Reading the shared blocklist
-    # back before the first request lands closes that for every restart with a
-    # live sibling — the one gap left is every process being down at once, which
-    # needs idp to be re-askable rather than a store to be re-read.
+    # Rehydrates first, then catches up. Revocations arrive over pub/sub, which
+    # replays nothing: a process that was starting, deploying or reconnecting
+    # when one was published never hears about it, and that once meant honouring
+    # a revoked token for the rest of its lifetime.
+    #
+    # Reading the shared blocklist back covers every restart with a LIVE
+    # SIBLING — some process received the event and wrote it through. Asking
+    # idp covers the case no store can: every process down at once, so nobody
+    # was there to write anything through and the event is simply gone.
+    #
+    # Both run before the subscriber thread exists, and therefore before the
+    # first request can land. That ordering is the point — a blocklist filled
+    # in afterwards would leave open exactly the window being closed.
     def start
       rehydrate!
+      catch_up!
 
       synchronize do
         return if @running
@@ -250,25 +264,71 @@ module IdpRails
 
     def handle_message(message)
       data = JSON.parse(message)
-      user_uuid = data["sub"]
-      return unless user_uuid
+      return unless apply(data)
 
-      # idp stamps `revoked_at` off the same clock that stamps `iat`, so the
-      # two compare exactly. A publisher old enough not to send it falls back
-      # to arrival, which delivery latency keeps within milliseconds of the
-      # revocation — and never widens the window the way a skew cushion here
-      # would, since that would re-refuse the fast re-login this exists to
-      # let through.
-      #
-      # `sid` names the session idp actually ended. Absent, the event is
-      # subject-wide — either a revocation that genuinely ends everything, or
-      # an idp too old to say which session, and both must fail closed.
       sid = data["sid"].to_s.empty? ? ALL_SESSIONS : data["sid"]
-      block!(user_uuid, revoked_at: data["revoked_at"], sid: sid)
       scope = sid ? "session #{sid}" : "all sessions"
-      @config.logger.info("[IdpRails] User revoked: #{user_uuid} (#{scope}, reason: #{data['reason']})")
+      @config.logger.info("[IdpRails] User revoked: #{data['sub']} (#{scope}, reason: #{data['reason']})")
     rescue JSON::ParserError => e
       @config.logger.warn("[IdpRails] Invalid revocation message: #{e.message}")
+    end
+
+    # Records one revocation, whichever way it arrived.
+    #
+    # A live event and a replayed one are the same three facts, so they take
+    # the same path — the catch-up cannot drift from the subscriber it is
+    # backstopping. Symbol keys are accepted because the catch-up callable
+    # belongs to the app, and JSON parsers there commonly symbolize.
+    #
+    # idp stamps `revoked_at` off the same clock that stamps `iat`, so the two
+    # compare exactly. An unreadable or absent stamp falls back to now, which
+    # fails closed: the subject re-authenticates and the fresh token, issued
+    # after the cutoff, is honoured.
+    #
+    # `sid` names the session idp actually ended. Absent, the revocation is
+    # subject-wide — either one that genuinely ends everything, or an idp too
+    # old to say which session, and both must fail closed.
+    def apply(data)
+      data = data.to_h.transform_keys(&:to_s) if data.respond_to?(:to_h)
+      return false unless data.is_a?(Hash)
+
+      user_uuid = data["sub"]
+      return false unless user_uuid
+
+      sid = data["sid"].to_s.empty? ? ALL_SESSIONS : data["sid"]
+      block!(user_uuid, revoked_at: data["revoked_at"], sid: sid)
+      true
+    end
+
+    # Ask idp for the revocations of the window this blocklist retains, and
+    # record the ones this process never heard.
+    #
+    # The last durability gap. Pub/sub is fire-and-forget, and the shared
+    # blocklist is only ever written by a process that RECEIVED an event — so
+    # when every consumer process was down at once, nobody wrote anything
+    # through and the revocation is gone from both. idp still has it, because
+    # every publish site stamps the row before it publishes. The fix is to ask.
+    #
+    # The callable takes the window start as unix seconds and returns the
+    # revocations from it onwards — an enumerable of { sub:, sid:, revoked_at: },
+    # the same three facts a live event carries. It is the app's, not the
+    # gem's: fetching them needs a service client's credentials, and a
+    # verification library has no business holding those.
+    #
+    # Degrades to a warning, like everything else on this path. An idp that
+    # cannot be reached at boot costs this process the events it missed; it
+    # must never cost it the ability to start.
+    def catch_up!
+      return unless @catch_up
+
+      since = Time.now.to_i - @config.blocklist_ttl
+      applied = Array(@catch_up.call(since)).count { |entry| apply(entry) }
+
+      @config.logger.info(
+        "[IdpRails] Caught up #{applied} revocation(s) from idp since #{since}"
+      )
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not catch up on revocations: #{e.message}")
     end
 
     # Do any of a subject's live revocations cover this token?
