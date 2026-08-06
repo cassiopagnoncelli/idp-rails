@@ -285,6 +285,32 @@ end
 
 The Railtie starts the subscriber automatically on boot and stops it on shutdown. The module helpers `IdpRails.verify` / `IdpRails.verify!` use it automatically (since 2.8.0 — before that they skipped revocation entirely, so callers had to build a `Verifier` by hand). Pass `revocation_subscriber:` to override; an explicit `nil` skips the check.
 
+### The driver gem is yours to add
+
+This gem carries neither `bunny` nor `redis` as a runtime dependency — they are
+development dependencies here, and each is required at the point of use, so an
+app on one transport never loads the other's driver. Configure a transport and
+you must add its gem:
+
+```ruby
+gem "bunny"  # c.rabbitmq_url
+gem "redis"  # c.redis, and the shared blocklist
+```
+
+Without it the subscriber warns and carries on: revocations are not received
+(or, for the shared blocklist and the JWKS L2 cache, not shared) and nothing
+else changes. Since 2.10.1 that is what actually happens — before it the
+missing `bunny` gem surfaced as `uninitialized constant
+IdpRails::RevocationSubscriber::Bunny`, which named a constant instead of the
+gem, and a missing `redis` gem took the JWKS client's constructor down with an
+unhandled `LoadError`.
+
+`#stop` is also silent as of 2.10.1: it neither re-raises whatever killed the
+subscriber thread nor closes a broker session that is still mid-handshake.
+Consumers call it from `at_exit`, where either one is not a message but the
+exit status of a process whose work has already finished — a `rails runner` or
+a rake task that did its job and still exited 1.
+
 ### Not missing an event
 
 Pub/sub replays nothing. Neither does the RabbitMQ path, which fans out to

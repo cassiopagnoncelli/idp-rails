@@ -202,6 +202,36 @@ RSpec.describe IdpRails::JwksClient do
     end
   end
 
+  # The redis gem is the consumer's to provide: it is a development dependency
+  # here and required at the point of use, so an app that caches JWKS in memory
+  # alone never loads it. Missing, it must cost the shared cache and nothing
+  # else — and `LoadError` is a `ScriptError`, so the `rescue StandardError`
+  # that was the only clause here could not catch it.
+  context 'without the redis gem installed' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+    let(:config) do
+      IdpRails.configuration.tap do |c|
+        c.cache_redis = 'redis://localhost:6379/0'
+        c.logger = logger
+      end
+    end
+
+    before do
+      # any_instance because the require happens in the constructor, before
+      # there is an instance to stub.
+      allow_any_instance_of(described_class).to receive(:require).with('redis').and_raise(LoadError)
+    end
+
+    it 'warns rather than raising' do
+      expect { client }.not_to raise_error
+      expect(logger).to have_received(:warn).with(/redis gem unavailable for JWKS cache/)
+    end
+
+    it 'still serves keys, from the in-memory cache alone' do
+      expect(client.public_key(key_pair.kid)).to be_a(OpenSSL::PKey::EC)
+    end
+  end
+
   context 'with Redis cache and namespace' do
     let(:redis) { instance_double(Redis) }
     let(:config) do
