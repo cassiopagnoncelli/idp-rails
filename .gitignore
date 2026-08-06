@@ -1,0 +1,11 @@
+# Do not include claude code. Must be `.claude/*` and not `.claude`: git
+# cannot re-include a file whose parent directory is itself excluded.
+# Worktrees live under .claude/worktrees — committing one records a gitlink
+# with no .gitmodules entry, and every consumer's `bundle install` then dies
+# on "No url found for submodule path".
+.claude/*
+
+# Bundler / gem build artefacts.
+/.bundle/
+/pkg/
+*.gem
