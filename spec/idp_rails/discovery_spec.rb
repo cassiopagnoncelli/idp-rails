@@ -62,10 +62,24 @@ RSpec.describe IdpRails::Discovery do
       expect(request).to have_been_requested.twice
     end
 
-    it 'raises when idp answers with an error' do
+    it 'raises when idp answers with an error and nothing is cached' do
       stub_discovery(status: 500)
 
       expect { described_class.new(base_url).issuer }.to raise_error(IdpRails::Error, /HTTP 500/)
+    end
+
+    # These endpoints change about never. The TTL is there to pick a move up
+    # eventually, not to make idp a hard dependency of every token check.
+    it 'serves the document it already holds when a refresh fails' do
+      stub_discovery
+      IdpRails.configuration.discovery_cache_ttl = 0
+      discovery = described_class.new(base_url)
+      expect(discovery.issuer).to eq('https://account.test')
+
+      stub_discovery(status: 503)
+
+      expect(discovery.issuer).to eq('https://account.test')
+      expect(discovery.jwks_uri).to eq('https://account.test/.well-known/jwks.json')
     end
   end
 
@@ -80,6 +94,43 @@ RSpec.describe IdpRails::Discovery do
       expect(config.jwks_url).to eq('https://account.test/.well-known/jwks.json')
       expect(config.issuer).to eq('https://account.test')
       expect(config.end_session_endpoint).to eq('https://account.test/oauth/end_session')
+    end
+
+    # jwks_url and issuer are load-bearing: nil reaches JwksClient as URI(nil)
+    # and raises an ArgumentError on the token-verification path, three frames
+    # from anything naming discovery. Say it here instead.
+    it 'raises a discovery-shaped error for jwks_url when the document cannot be read' do
+      stub_discovery(status: 503)
+      IdpRails.reset_configuration!
+      IdpRails.configuration.discovery_url = base_url
+
+      expect { IdpRails.configuration.jwks_url }
+        .to raise_error(IdpRails::Error, /Could not read jwks_uri from idp's discovery document/)
+    end
+
+    it 'raises for issuer rather than quietly handing back the placeholder' do
+      stub_discovery(status: 503)
+      IdpRails.reset_configuration!
+      IdpRails.configuration.discovery_url = base_url
+
+      expect { IdpRails.configuration.issuer }
+        .to raise_error(IdpRails::Error, /Could not read issuer/)
+    end
+
+    it 'raises when the document is readable but does not publish the key' do
+      stub_discovery(body: { issuer: 'https://account.test' })
+      IdpRails.reset_configuration!
+      IdpRails.configuration.discovery_url = base_url
+
+      expect { IdpRails.configuration.jwks_url }
+        .to raise_error(IdpRails::Error, /does not publish jwks_uri/)
+    end
+
+    it 'raises a self-explaining error when neither jwks_url nor discovery_url is set' do
+      IdpRails.reset_configuration!
+
+      expect { IdpRails.configuration.jwks_url }
+        .to raise_error(IdpRails::Error, /no discovery_url is set/)
     end
 
     # Adopting discovery has to be a per-consumer decision, not a flag day.
