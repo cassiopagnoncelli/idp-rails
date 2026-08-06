@@ -19,17 +19,30 @@ For Rails apps, require the Rails integration instead of the base library:
 require "idp_rails/rails"
 ```
 
-The Railtie auto-configures from environment variables (`IDP_JWKS_URL`, `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
+The Railtie auto-configures from environment variables (`IDP_URL`, or the older `IDP_JWKS_URL` / `IDP_JWT_ISSUER`) and wires up the revocation subscriber if Redis is configured.
 
 ## Configuration
 
+`discovery_url` is the short version: point it at idp and the JWKS endpoint,
+issuer and RP-initiated logout endpoint all come from the document idp already
+publishes, instead of from three settings that can drift apart. Anything set
+explicitly still wins, so a consumer can adopt it on its own schedule.
+
 ```ruby
 IdpRails.configure do |c|
-  # Required: the Idp JWKS endpoint.
+  # idp's base url. With it, jwks_url / issuer / end_session_endpoint are
+  # optional — they resolve from /.well-known/openid-configuration.
+  c.discovery_url = "https://account.yourcompany.com"
+
+  # Required unless discovery_url is set: the Idp JWKS endpoint.
   c.jwks_url = "https://account.yourcompany.com/.well-known/jwks.json"
 
-  # Required: must match the `iss` claim in tokens.
+  # Must match the `iss` claim in tokens. Published by discovery.
   c.issuer = "https://account.yourcompany.com"
+
+  # RP-initiated logout endpoint. Published by discovery; set it only when
+  # not using discovery.
+  # c.end_session_endpoint = "https://account.yourcompany.com/oauth/end_session"
 
   # Optional: the expected `aud` claim (idp's single platform audience).
   # Defaults to the issuer string, which matches idp's own default —

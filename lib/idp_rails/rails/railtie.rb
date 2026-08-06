@@ -5,10 +5,21 @@ module IdpRails
     class Railtie < ::Rails::Railtie
       initializer "idp_rails.configure" do
         # Auto-configure from Rails credentials or environment variables.
+        #
+        # IDP_URL alone is enough now: jwks_uri, issuer and end_session_endpoint
+        # all come off the discovery document it points at. The explicit vars
+        # still win where an app sets them, so nothing changes for a consumer
+        # until it drops them.
+        #
+        # Assigned rather than ||='d: both readers now answer with a fallback,
+        # so `config.issuer ||= ...` would find DEFAULT_ISSUER already truthy
+        # and quietly discard the env var — and `config.jwks_url ||= ...` would
+        # put a discovery fetch on the boot path to find that out.
         IdpRails.configure do |config|
-          config.jwks_url ||= ENV.fetch("IDP_JWKS_URL", nil)
-          config.issuer   ||= ENV.fetch("IDP_JWT_ISSUER", "https://account.yourcompany.com")
-          config.logger     = ::Rails.logger
+          config.discovery_url = ENV.fetch("IDP_URL", nil) if config.discovery_url.nil?
+          config.jwks_url = ENV["IDP_JWKS_URL"] if ENV["IDP_JWKS_URL"]
+          config.issuer = ENV["IDP_JWT_ISSUER"] if ENV["IDP_JWT_ISSUER"]
+          config.logger = ::Rails.logger
         end
       end
 
