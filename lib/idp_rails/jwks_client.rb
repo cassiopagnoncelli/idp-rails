@@ -143,6 +143,13 @@ module IdpRails
       else
         redis_config
       end
+    rescue LoadError
+      # The redis gem is the consumer's to provide, and a deployment that keeps
+      # its JWKS in memory alone is a supported one — so a missing gem costs the
+      # shared cache and nothing else. It needs its own clause: `LoadError` is a
+      # `ScriptError`, which the `StandardError` rescue below cannot catch.
+      @config.logger.warn("[IdpRails] redis gem unavailable for JWKS cache — keys are cached in this process only")
+      nil
     rescue StandardError => e
       @config.logger.warn("[IdpRails] Redis unavailable for JWKS cache: #{e.message}")
       nil

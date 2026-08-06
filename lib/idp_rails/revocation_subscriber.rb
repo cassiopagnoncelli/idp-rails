@@ -43,6 +43,10 @@ module IdpRails
     # RabbitMQ fanout exchange name.
     EXCHANGE_NAME = "idp.token_revocations"
 
+    # How long #stop waits for the subscriber thread before leaving it to the
+    # process teardown (seconds).
+    JOIN_TIMEOUT = 5
+
     # The key a subject-wide revocation is filed under: one that named no
     # session, so it covers every token the subject holds.
     ALL_SESSIONS = nil
@@ -148,16 +152,17 @@ module IdpRails
     end
 
     # Stop the background subscriber thread.
+    #
+    # Shutdown never raises. Consumers call this from `at_exit`, where an
+    # exception is not a message — it is the process's exit status, applied
+    # after the work the process was run for has already succeeded. A rake task
+    # that dropped both databases and printed so still exited 1, because the
+    # subscriber it never used had died in the background.
     def stop
       synchronize { @running = false }
 
-      if @bunny_connection
-        @bunny_connection.close if @bunny_connection.open?
-      else
-        @subscriber_redis&.close
-      end
-
-      @thread&.join(5)
+      close_transport
+      await_thread
       @config.logger.info("[IdpRails] Revocation subscriber stopped")
     end
 
@@ -209,6 +214,46 @@ module IdpRails
 
     private
 
+    # Closes whichever transport the subscriber opened, if it is in a state
+    # that can be closed.
+    #
+    # `@bunny_connection` is assigned by `Bunny.new` — which only builds the
+    # session — and the AMQP handshake happens later, inside `#start`. A Bunny
+    # session reports `open?` while that handshake is still in flight, so a
+    # short-lived process (`rails runner`, a one-shot rake task) that exits
+    # mid-connect used to close a half-open session and wait for a close-ok
+    # that nobody was ever going to send: `Timeout::Error`, out of `at_exit`,
+    # on a process whose actual work had finished.
+    #
+    # A session that never finished connecting has nothing worth closing — the
+    # socket dies with the process — so it is left alone. Anything else that
+    # goes wrong on the way down is a warning: shutdown is the one path where
+    # raising cannot help anyone.
+    def close_transport
+      if @bunny_connection
+        return if @bunny_connection.respond_to?(:connecting?) && @bunny_connection.connecting?
+
+        @bunny_connection.close if @bunny_connection.open?
+      else
+        @subscriber_redis&.close
+      end
+    rescue StandardError => e
+      @config.logger.warn("[IdpRails] Could not close the revocation transport: #{e.message}")
+    end
+
+    # Waits for the subscriber thread, without adopting its fate.
+    #
+    # `Thread#join` re-raises in the CALLER whatever killed the thread. The
+    # subscribe loops log their own failures, so re-raising here adds nothing
+    # but a non-zero exit status for a process that was only shutting down.
+    # `Exception` rather than `StandardError` on purpose: a thread can just as
+    # well have died on a `LoadError`, which is a `ScriptError`.
+    def await_thread
+      @thread&.join(JOIN_TIMEOUT)
+    rescue Exception => e
+      @config.logger.debug("[IdpRails] Revocation subscriber thread ended with: #{e.class}: #{e.message}")
+    end
+
     def subscribe_loop
       if @rabbitmq_url
         subscribe_loop_rabbitmq
@@ -226,6 +271,15 @@ module IdpRails
           handle_message(message)
         end
       end
+    rescue LoadError
+      # Before the Redis:: clause below, and not after it: matching a rescue
+      # evaluates the constants it names, and the one case this clause exists
+      # for — `require "redis"` failing — is exactly the case where `Redis` is
+      # not defined. Ordered the other way, the gem-missing error is replaced
+      # by an uninitialized-constant NameError raised by the rescue list.
+      @config.logger.warn(
+        "[IdpRails] redis gem unavailable — revocations will not be received over Redis pub/sub"
+      )
     rescue Redis::BaseConnectionError => e
       if synchronize { @running }
         @config.logger.error("[IdpRails] Revocation subscriber connection lost: #{e.message}, reconnecting in 5s...")
@@ -252,6 +306,16 @@ module IdpRails
       queue.subscribe(block: true) do |_delivery_info, _properties, payload|
         handle_message(payload)
       end
+    rescue LoadError
+      # Same ordering rule as the Redis loop, and this is the one that bit a
+      # consumer: `LoadError` is a `ScriptError`, so `rescue StandardError`
+      # never saw it, and on its way out Ruby evaluated the `Bunny::` clause
+      # below — naming a constant the failed require had not defined. What the
+      # app's users got was "uninitialized constant ... Bunny (NameError)",
+      # which says nothing about the gem that is actually missing.
+      @config.logger.warn(
+        "[IdpRails] bunny gem unavailable — revocations will not be received over RabbitMQ"
+      )
     rescue Bunny::TCPConnectionFailed, Bunny::ConnectionClosedError, Bunny::NetworkFailure => e
       if synchronize { @running }
         @config.logger.error("[IdpRails] RabbitMQ subscriber connection lost: #{e.message}, reconnecting in 5s...")
