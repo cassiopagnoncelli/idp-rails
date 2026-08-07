@@ -80,6 +80,10 @@ module IdpRails
       @blocklist = {}
       @thread = nil
       @running = false
+      # Set when the connection drops, cleared once the replay after it lands.
+      # `start` has already rehydrated and caught up, so the FIRST subscribe
+      # has nothing to replay — only a later one does.
+      @reconnecting = false
       @bunny_connection = nil
       # A SECOND connection, distinct from the one subscribe_loop_redis blocks
       # in SUBSCRIBE: a subscribed connection accepts no other commands.
@@ -262,11 +266,49 @@ module IdpRails
       end
     end
 
+    # Remember that this process went off the channel, so the next successful
+    # subscribe knows to replay rather than simply carry on.
+    def note_disconnect
+      synchronize { @reconnecting = true }
+    end
+
+    def reconnecting?
+      synchronize { @reconnecting }
+    end
+
+    # Replay what could not be heard while this process was off the channel.
+    #
+    # The same two sources `start` uses, for the same reasons: the shared
+    # blocklist holds what a live sibling received and wrote through, and idp
+    # still holds the window nobody was up to hear. Pub/sub redelivers neither.
+    #
+    # This was the hole: a reconnect resubscribed and nothing more, so every
+    # revocation published during an outage was honoured as if it had never
+    # happened — for the rest of each affected token's life, with the
+    # subscriber reporting itself perfectly healthy throughout.
+    #
+    # Both sources already degrade to a warning of their own, so this cannot
+    # fail the subscription it has just recovered.
+    def recover_missed!
+      @config.logger.info("[IdpRails] Reconnected — replaying revocations missed while away")
+      rehydrate!
+      catch_up!
+      synchronize { @reconnecting = false }
+    end
+
     def subscribe_loop_redis
       require "redis"
 
       @subscriber_redis = build_redis
       @subscriber_redis.subscribe(@channel) do |on|
+        # Fires when the channel subscription is confirmed — the first moment
+        # nothing more can be missed, and therefore the moment to replay what
+        # already was. Redis has no pre-subscription buffer to bind to the way
+        # the fanout does, so this is as early as the replay can honestly run.
+        on.subscribe do
+          recover_missed! if reconnecting?
+        end
+
         on.message do |_channel, message|
           handle_message(message)
         end
@@ -283,6 +325,7 @@ module IdpRails
     rescue Redis::BaseConnectionError => e
       if synchronize { @running }
         @config.logger.error("[IdpRails] Revocation subscriber connection lost: #{e.message}, reconnecting in 5s...")
+        note_disconnect
         sleep 5
         retry
       end
@@ -303,6 +346,13 @@ module IdpRails
 
       @config.logger.info("[IdpRails] Revocation subscriber bound to RabbitMQ exchange: #{EXCHANGE_NAME}")
 
+      # After the bind and before the subscribe, which is the exact window this
+      # belongs in: the broker holds everything published from the bind onwards,
+      # so nothing more can be missed, and the replay below covers everything
+      # before it. Draining the queue starts a moment later, none the worse for
+      # the wait.
+      recover_missed! if reconnecting?
+
       queue.subscribe(block: true) do |_delivery_info, _properties, payload|
         handle_message(payload)
       end
@@ -319,6 +369,7 @@ module IdpRails
     rescue Bunny::TCPConnectionFailed, Bunny::ConnectionClosedError, Bunny::NetworkFailure => e
       if synchronize { @running }
         @config.logger.error("[IdpRails] RabbitMQ subscriber connection lost: #{e.message}, reconnecting in 5s...")
+        note_disconnect
         sleep 5
         retry
       end

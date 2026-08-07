@@ -583,4 +583,111 @@ RSpec.describe IdpRails::RevocationSubscriber do
       expect(started.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
     end
   end
+
+  # A dropped connection used to cost every revocation published while it was
+  # down — permanently. The loop reconnected and resubscribed, and stopped
+  # there: neither the shared blocklist nor idp's window was ever consulted
+  # again, so an event nobody was up to hear was honoured as though it had
+  # never happened, for the rest of each affected token's life. The subscriber
+  # reported itself perfectly healthy throughout, which is what made it cost so
+  # much to notice.
+  describe 'replaying what a disconnect swallowed' do
+    let(:exchange) { instance_double(Bunny::Exchange) }
+    let(:queue) { instance_double(Bunny::Queue, bind: nil) }
+    let(:channel) { instance_double(Bunny::Channel, fanout: exchange, queue: queue) }
+    let(:session) { instance_double(Bunny::Session, start: nil, create_channel: channel) }
+
+    before do
+      IdpRails.configuration.rabbitmq_url = 'amqp://guest:guest@127.0.0.1:5672'
+      allow(Bunny).to receive(:new).and_return(session)
+    end
+
+    after { IdpRails.configuration.rabbitmq_url = nil }
+
+    # The first subscribe has nothing to replay: #start rehydrated and caught
+    # up before the thread existed. Replaying there would double every boot's
+    # work for nothing.
+    it 'does not replay on the first subscribe' do
+      fresh = described_class.new
+      allow(fresh).to receive(:recover_missed!)
+      allow(queue).to receive(:subscribe)
+
+      fresh.send(:subscribe_loop_rabbitmq)
+
+      expect(fresh).not_to have_received(:recover_missed!)
+    end
+
+    it 'replays once the connection comes back' do
+      reconnecting = described_class.new
+      reconnecting.instance_variable_set(:@running, true)
+      allow(reconnecting).to receive(:sleep)
+      allow(reconnecting).to receive(:recover_missed!)
+
+      attempts = 0
+      allow(queue).to receive(:subscribe) do
+        attempts += 1
+        raise Bunny::NetworkFailure.new('connection reset', StandardError.new) if attempts == 1
+
+        nil
+      end
+
+      reconnecting.send(:subscribe_loop_rabbitmq)
+
+      expect(attempts).to eq(2)
+      expect(reconnecting).to have_received(:recover_missed!).once
+    end
+
+    # After the bind and before the subscribe: from the bind onwards the broker
+    # is holding everything published, so nothing more can be missed, and the
+    # replay covers everything before it.
+    it 'replays after binding the queue, so the gap has a far edge' do
+      order = []
+      reconnecting = described_class.new
+      reconnecting.instance_variable_set(:@running, true)
+      allow(reconnecting).to receive(:sleep)
+      allow(reconnecting).to receive(:recover_missed!) { order << :replay }
+      allow(queue).to receive(:bind) { order << :bind }
+
+      attempts = 0
+      allow(queue).to receive(:subscribe) do
+        order << :subscribe
+        attempts += 1
+        raise Bunny::NetworkFailure.new('connection reset', StandardError.new) if attempts == 1
+
+        nil
+      end
+
+      reconnecting.send(:subscribe_loop_rabbitmq)
+
+      expect(order).to eq(%i[bind subscribe bind replay subscribe])
+    end
+
+    describe '#recover_missed!' do
+      it 'reads the shared blocklist back and asks idp for the window' do
+        recovered = described_class.new
+        allow(recovered).to receive(:rehydrate!)
+        allow(recovered).to receive(:catch_up!)
+        recovered.send(:note_disconnect)
+
+        recovered.send(:recover_missed!)
+
+        expect(recovered).to have_received(:rehydrate!)
+        expect(recovered).to have_received(:catch_up!)
+      end
+
+      # Or the next reconnect after a quiet spell replays a window it has
+      # already replayed, on every single subscribe.
+      it 'clears the flag once it has run' do
+        recovered = described_class.new
+        allow(recovered).to receive(:rehydrate!)
+        allow(recovered).to receive(:catch_up!)
+        recovered.send(:note_disconnect)
+        expect(recovered.send(:reconnecting?)).to be true
+
+        recovered.send(:recover_missed!)
+
+        expect(recovered.send(:reconnecting?)).to be false
+      end
+    end
+  end
 end

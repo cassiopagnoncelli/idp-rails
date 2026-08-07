@@ -325,9 +325,24 @@ closes a case the layer above cannot:
 | Some sibling processes are up | They receive it normally |
 | This process restarts afterwards | The **shared blocklist** — every received revocation is mirrored into Redis, and `#start` reads it back before the subscriber thread exists |
 | **Every** consumer process is down | **The catch-up** — nobody was there to write anything through, so `#start` asks idp for the window instead |
+| This process is up, but off the broker | Both of them again, on the **reconnect** (2.11.0) |
 
-Both landed in 2.9.0; before it, a restart forgot every revocation it had not
-re-heard.
+The first two landed in 2.9.0; before them, a restart forgot every revocation
+it had not re-heard.
+
+That last row was a hole until 2.11.0. The loop has always retried a dropped
+connection every five seconds, but it resubscribed and stopped there — so a
+revocation published during an outage was honoured as though it had never
+happened, for the rest of each affected token's life, with `#running?`
+reporting perfect health throughout. A reconnect now replays exactly what a
+start does.
+
+On the RabbitMQ path that replay runs after the queue is bound and before it is
+subscribed: from the bind onwards the broker is already holding everything
+published, so that instant is the gap's far edge and the replay covers
+everything before it. Redis pub/sub has no equivalent buffer, so there it runs
+from the `subscribe` confirmation — as early as it can honestly be claimed that
+nothing more is being missed.
 
 The shared blocklist needs nothing but `cache_redis_namespace` (so two apps on
 one Redis do not collide). Entries expire there exactly as they do in memory.
