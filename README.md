@@ -261,7 +261,11 @@ An entry blocks the tokens that **existed when the revocation happened**, not th
 
 It also honours the event's `sid` when there is one. Idp's RP-initiated logout revokes exactly one grant — one client, one SSO session — so the event names that session and the entry is scoped to it: signing out on a laptop does not refuse the same user's phone. Events that carry no `sid` are subject-wide, which covers both the revocations that genuinely end everything (password change, suspension, sign out everywhere) and an idp too old to publish one. A token carrying no `sid` of its own cannot be matched either way, so it fails closed against any session-scoped entry.
 
-Entries are retained for `blocklist_ttl` (default 900s). **This must match idp's `JWT_ACCESS_TOKEN_TTL`** — an entry only has to outlive the newest token it could still be covering, and one shorter than the token lifetime lets revoked tokens come back to life before they expire.
+Entries are retained for `blocklist_ttl` (default 900s). An entry only has to outlive the newest token it could still be covering, and one shorter than the token lifetime lets revoked tokens come back to life for the difference — still inside their own validity.
+
+Since 2.12.0 that is no longer yours to keep in step by hand. Idp publishes `access_token_ttl` in its discovery document, and the subscriber widens `blocklist_ttl` to it at startup when the published value is longer, logging when it moves. **Widen only**: a longer value configured here is a deliberate choice and a smaller published one will not undo it. An idp too old to publish it, or a discovery that cannot be read, leaves your configured value exactly as it is.
+
+Before that the two numbers matched only by coincidence — 900 on each side, in two different systems, with nothing anywhere positioned to notice one had moved. Raising idp's `JWT_ACCESS_TOKEN_TTL` silently resurrected revoked tokens on every consumer.
 
 Idp publishes to this channel when:
 - A user's password is changed
@@ -277,8 +281,9 @@ IdpRails.configure do |c|
   # c.redis = { host: "redis.internal", port: 6379 }  # also works
   # c.redis = Redis.new(...)  # or pass an instance
 
-  # Entry retention. Leave it alone unless idp runs with a non-default
-  # JWT_ACCESS_TOKEN_TTL — then set it to the same number of seconds.
+  # Entry retention. Leave it alone: idp publishes its access token TTL and
+  # the subscriber widens this to match. Set it only to retain LONGER than
+  # idp's tokens live — a smaller published value never narrows it.
   # c.blocklist_ttl = 1800
 end
 ```
@@ -326,6 +331,7 @@ closes a case the layer above cannot:
 | This process restarts afterwards | The **shared blocklist** — every received revocation is mirrored into Redis, and `#start` reads it back before the subscriber thread exists |
 | **Every** consumer process is down | **The catch-up** — nobody was there to write anything through, so `#start` asks idp for the window instead |
 | This process is up, but off the broker | Both of them again, on the **reconnect** (2.11.0) |
+| The broker failed in a way nothing named | The **supervision loop** retries it anyway (2.12.0) |
 
 The first two landed in 2.9.0; before them, a restart forgot every revocation
 it had not re-heard.
@@ -344,6 +350,22 @@ everything before it. Redis pub/sub has no equivalent buffer, so there it runs
 from the `subscribe` confirmation — as early as it can honestly be claimed that
 nothing more is being missed.
 
+The last row was the one that made the others conditional. Until 2.12.0 only
+connection-class errors were retried; anything else — a Redis ACL refusing
+SUBSCRIBE, a Bunny surprise, an auth failure that would have cleared on its own
+— was logged once and the subscriber thread exited, permanently. The app went
+on serving requests against a blocklist frozen at that instant, `#running?` was
+consulted by nobody, and nothing anywhere said a word. Failing open is the
+right policy for revocation; failing open *silently*, for the life of the
+process, is not.
+
+There is now one retry site, and it retries everything except `LoadError` — a
+missing driver gem is the one failure no amount of waiting fixes. The wait
+backs off from 5s to a 60s ceiling with jitter, so a permanent-looking failure
+settles into a line a minute rather than one every five seconds, and a fleet
+that lost the broker together does not come back in lockstep and knock it over
+again.
+
 The shared blocklist needs nothing but `cache_redis_namespace` (so two apps on
 one Redis do not collide). Entries expire there exactly as they do in memory.
 
@@ -361,14 +383,27 @@ end
 ```
 
 Behind it is idp's `GET /api/v1/revocations?since=<unix ts>`, gated on the
-`revocations:read` scope of a `client_credentials` grant. Leave the setting nil
-and the catch-up is skipped — everything else behaves as before.
+`revocations:read` scope of a `client_credentials` grant.
+
+Leaving it nil skips the catch-up, and since 2.12.0 the subscriber warns at
+boot when a transport is configured without one. It is worth the line: the
+catch-up is the *only* recovery from an outage that took every process of an
+app down at once. The shared blocklist is written exclusively by a process that
+received an event, so when none did, there is nothing in it to read back.
 
 Both fills run *before* the subscriber thread is spawned, and therefore before
 the first request can land: a blocklist filled in afterwards would leave open
 exactly the window being closed. Both also degrade to a warning. An unreachable
 Redis or idp costs this process the events it missed; it must never cost it the
 ability to start.
+
+A catch-up that could not reach idp is retried every 30s until it lands (2.12.0),
+against the window it originally owed rather than a freshly computed one — that
+would slide forward by however long idp stayed down and skip the oldest part of
+the very gap being retried. Slower than the broker's own retry on purpose: a
+catch-up is a paged server-to-server call, and an idp coming back up should not
+be held down by its own clients. Before 2.12.0 the warning was the end of it,
+and the window was lost for good.
 
 Without Rails, manage it manually:
 

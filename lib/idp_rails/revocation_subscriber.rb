@@ -47,6 +47,20 @@ module IdpRails
     # process teardown (seconds).
     JOIN_TIMEOUT = 5
 
+    # First wait before reconnecting to the broker (seconds), doubling from
+    # there up to RECONNECT_MAX_DELAY.
+    RECONNECT_BASE_DELAY = 5
+
+    # Ceiling on the reconnect wait (seconds). A failure that is really
+    # permanent should settle into a line a minute, not one every five seconds
+    # for as long as the process lives.
+    RECONNECT_MAX_DELAY = 60
+
+    # How long to wait before asking idp again for a window whose replay
+    # failed (seconds). Slower than the broker retry on purpose — see
+    # #catch_up_retry_loop.
+    CATCH_UP_RETRY_DELAY = 30
+
     # The key a subject-wide revocation is filed under: one that named no
     # session, so it covers every token the subject holds.
     ALL_SESSIONS = nil
@@ -84,6 +98,12 @@ module IdpRails
       # `start` has already rehydrated and caught up, so the FIRST subscribe
       # has nothing to replay — only a later one does.
       @reconnecting = false
+      # The window a failed replay still owes, pinned at the moment it was
+      # computed. Recomputing it on the retry would slide the window forward
+      # by however long idp stayed down, and skip the oldest part of the very
+      # gap being retried.
+      @catch_up_owed_since = nil
+      @catch_up_thread = nil
       @bunny_connection = nil
       # A SECOND connection, distinct from the one subscribe_loop_redis blocks
       # in SUBSCRIBE: a subscribed connection accepts no other commands.
@@ -139,18 +159,30 @@ module IdpRails
     # Both run before the subscriber thread exists, and therefore before the
     # first request can land. That ordering is the point — a blocklist filled
     # in afterwards would leave open exactly the window being closed.
+    #
+    # The `@running` claim comes FIRST, before either replay. Two reasons, and
+    # both were bugs: a second `start` used to re-run a paged catch-up against
+    # idp before discovering it had nothing to do, and a catch-up that failed
+    # could not queue its own retry, because `schedule_catch_up_retry` rightly
+    # refuses to arm one for a subscriber that is not up — which left the boot
+    # replay, the exact path the retry exists for, as the one path without it.
     def start
-      rehydrate!
-      catch_up!
-
       synchronize do
-        return if @running
+        return self if @running
 
         @running = true
+      end
+
+      adopt_published_retention!
+      rehydrate!
+      catch_up_from!(catch_up_window_start)
+
+      synchronize do
         @thread = Thread.new { subscribe_loop }
         @thread.abort_on_exception = false
       end
 
+      warn_missing_catch_up
       @config.logger.info("[IdpRails] Revocation subscriber started on channel: #{@channel}")
       self
     end
@@ -167,6 +199,7 @@ module IdpRails
 
       close_transport
       await_thread
+      await_catch_up_thread
       @config.logger.info("[IdpRails] Revocation subscriber stopped")
     end
 
@@ -258,12 +291,77 @@ module IdpRails
       @config.logger.debug("[IdpRails] Revocation subscriber thread ended with: #{e.class}: #{e.message}")
     end
 
+    # The one retry site, and the only thing standing between a transport
+    # failure and a blocklist that never hears another word.
+    #
+    # It used to be two rescue ladders, one per transport, each retrying its
+    # own connection-class errors and each ending in a bare `rescue
+    # StandardError` that logged once and let the thread exit. Everything else
+    # — a Redis ACL refusing SUBSCRIBE, a Bunny surprise, an auth failure that
+    # was transient — killed the subscriber permanently. The app carried on
+    # serving requests against a blocklist frozen at that instant, and
+    # `running?` was never consulted by anyone, so nothing anywhere said so.
+    # Failing open is the right policy for revocation; failing open SILENTLY,
+    # for the rest of the process's life, is not.
+    #
+    # So: retry everything. The single exception is `LoadError`, which means
+    # the driver gem is not installed — no amount of waiting installs it, and
+    # a loop around that would be a log line every minute forever.
     def subscribe_loop
-      if @rabbitmq_url
-        subscribe_loop_rabbitmq
-      else
-        subscribe_loop_redis
+      attempt = 0
+
+      while running_flag?
+        begin
+          @rabbitmq_url ? subscribe_rabbitmq : subscribe_redis
+          # A subscribe that RETURNS rather than raises had its transport
+          # closed from under it — `stop` does exactly that, and the loop
+          # condition below is what tells the two cases apart.
+          attempt = 0
+        rescue LoadError
+          # Permanent, and the only permanent one. Named per transport because
+          # "uninitialized constant Bunny" is what a consumer used to get, and
+          # it says nothing about the gem that is actually missing.
+          @config.logger.warn(
+            "[IdpRails] #{driver_gem} gem unavailable — revocations will not be received over #{transport_name}"
+          )
+          return
+        rescue StandardError => e
+          @config.logger.error("[IdpRails] Revocation subscriber error on #{transport_name}: #{e.class}: #{e.message}")
+        end
+
+        break unless running_flag?
+
+        # Whatever ended the subscription, this process is off the channel and
+        # the next successful subscribe owes a replay.
+        note_disconnect
+
+        delay = reconnect_delay(attempt)
+        attempt += 1
+        @config.logger.error("[IdpRails] Revocation subscriber reconnecting to #{transport_name} in #{delay.round(1)}s")
+        sleep delay
       end
+    end
+
+    def running_flag?
+      synchronize { @running }
+    end
+
+    def transport_name
+      @rabbitmq_url ? "RabbitMQ" : "Redis pub/sub"
+    end
+
+    def driver_gem
+      @rabbitmq_url ? "bunny" : "redis"
+    end
+
+    # Exponential backoff from the flat 5s this used to sleep, capped so a
+    # permanent-looking failure (a wrong Redis ACL, a vhost that does not
+    # exist) settles into a minute rather than logging every five seconds
+    # forever. Half the delay is jitter, so a fleet that lost the broker
+    # together does not come back in lockstep and knock it over again.
+    def reconnect_delay(attempt)
+      capped = [ RECONNECT_BASE_DELAY * (2**[ attempt, 8 ].min), RECONNECT_MAX_DELAY ].min
+      (capped / 2.0) + (rand * capped / 2.0)
     end
 
     # Remember that this process went off the channel, so the next successful
@@ -292,11 +390,18 @@ module IdpRails
     def recover_missed!
       @config.logger.info("[IdpRails] Reconnected — replaying revocations missed while away")
       rehydrate!
-      catch_up!
+      catch_up_from!(catch_up_window_start)
       synchronize { @reconnecting = false }
     end
 
-    def subscribe_loop_redis
+    # Neither of these rescues any more: the supervision loop above is the one
+    # retry site, and a failure here is something it needs to see. They were
+    # also where a subtle hazard lived — matching a `rescue` clause evaluates
+    # the constants it names, so a `rescue Bunny::…` on the way out of a failed
+    # `require "bunny"` raised "uninitialized constant Bunny" over the top of
+    # the LoadError that was the actual news. With no per-transport clause
+    # left, there is nothing to order wrongly.
+    def subscribe_redis
       require "redis"
 
       @subscriber_redis = build_redis
@@ -313,27 +418,9 @@ module IdpRails
           handle_message(message)
         end
       end
-    rescue LoadError
-      # Before the Redis:: clause below, and not after it: matching a rescue
-      # evaluates the constants it names, and the one case this clause exists
-      # for — `require "redis"` failing — is exactly the case where `Redis` is
-      # not defined. Ordered the other way, the gem-missing error is replaced
-      # by an uninitialized-constant NameError raised by the rescue list.
-      @config.logger.warn(
-        "[IdpRails] redis gem unavailable — revocations will not be received over Redis pub/sub"
-      )
-    rescue Redis::BaseConnectionError => e
-      if synchronize { @running }
-        @config.logger.error("[IdpRails] Revocation subscriber connection lost: #{e.message}, reconnecting in 5s...")
-        note_disconnect
-        sleep 5
-        retry
-      end
-    rescue StandardError => e
-      @config.logger.error("[IdpRails] Revocation subscriber error: #{e.message}")
     end
 
-    def subscribe_loop_rabbitmq
+    def subscribe_rabbitmq
       require "bunny"
 
       @bunny_connection = Bunny.new(@rabbitmq_url)
@@ -356,25 +443,6 @@ module IdpRails
       queue.subscribe(block: true) do |_delivery_info, _properties, payload|
         handle_message(payload)
       end
-    rescue LoadError
-      # Same ordering rule as the Redis loop, and this is the one that bit a
-      # consumer: `LoadError` is a `ScriptError`, so `rescue StandardError`
-      # never saw it, and on its way out Ruby evaluated the `Bunny::` clause
-      # below — naming a constant the failed require had not defined. What the
-      # app's users got was "uninitialized constant ... Bunny (NameError)",
-      # which says nothing about the gem that is actually missing.
-      @config.logger.warn(
-        "[IdpRails] bunny gem unavailable — revocations will not be received over RabbitMQ"
-      )
-    rescue Bunny::TCPConnectionFailed, Bunny::ConnectionClosedError, Bunny::NetworkFailure => e
-      if synchronize { @running }
-        @config.logger.error("[IdpRails] RabbitMQ subscriber connection lost: #{e.message}, reconnecting in 5s...")
-        note_disconnect
-        sleep 5
-        retry
-      end
-    rescue StandardError => e
-      @config.logger.error("[IdpRails] RabbitMQ subscriber error: #{e.message}")
     end
 
     def handle_message(message)
@@ -439,18 +507,146 @@ module IdpRails
     #
     # Degrades to a warning, like everything else on this path. An idp that
     # cannot be reached at boot costs this process the events it missed; it
-    # must never cost it the ability to start.
-    def catch_up!
-      return unless @catch_up
+    # must never cost it the ability to start. The return value is what stops
+    # the warning being the end of the story — `catch_up_from!` keeps the
+    # window owed until one of these comes back true.
+    #
+    # An idp that ANSWERED has caught this process up, whatever the answer
+    # said: an empty window, entries whose shape has drifted, all of it. None
+    # of those are fixed by asking the same question again.
+    #
+    # @return [Boolean] whether the window was actually replayed
+    def catch_up!(since)
+      return true unless @catch_up
 
-      since = Time.now.to_i - @config.blocklist_ttl
       applied = Array(@catch_up.call(since)).count { |entry| apply(entry) }
 
       @config.logger.info(
         "[IdpRails] Caught up #{applied} revocation(s) from idp since #{since}"
       )
+      true
     rescue StandardError => e
       @config.logger.warn("[IdpRails] Could not catch up on revocations: #{e.message}")
+      false
+    end
+
+    # The oldest revocation still worth asking for: one retention window back,
+    # because an entry older than that has already lapsed everywhere.
+    def catch_up_window_start
+      Time.now.to_i - @config.blocklist_ttl
+    end
+
+    # Replay one window, and keep owing it until a replay actually lands.
+    #
+    # An unreachable idp used to cost the window permanently — one warning,
+    # and the events nobody was up to hear were honoured for the rest of their
+    # lives. It is now retried until it succeeds, which matters most in the
+    # case the catch-up exists for: the whole fleet down at once, coming back
+    # while idp is still on its way up.
+    def catch_up_from!(since)
+      # An outstanding window is never narrowed by a newer one. `catch_up!`
+      # runs every entry through `apply`, which merges by max on both the
+      # deadline and the per-session cutoff, so replaying more than is missing
+      # costs nothing — while replaying less loses the difference for good.
+      since = [ since, synchronize { @catch_up_owed_since } ].compact.min
+
+      if catch_up!(since)
+        synchronize { @catch_up_owed_since = nil }
+        return
+      end
+
+      synchronize { @catch_up_owed_since = since }
+      schedule_catch_up_retry
+    end
+
+    # One retry thread at a time, for as long as a window is owed and this
+    # subscriber is up.
+    #
+    # A thread rather than a slot in the subscribe loop, because that loop
+    # spends its life blocked in SUBSCRIBE and the two failures are
+    # independent: a healthy broker with an unreachable idp is exactly the
+    # shape this exists for, and it leaves the subscribe loop with nothing to
+    # do and nowhere to notice.
+    def schedule_catch_up_retry
+      synchronize do
+        return unless @running
+        return if @catch_up_thread&.alive?
+
+        @config.logger.warn(
+          "[IdpRails] revocation catch-up still owed from #{@catch_up_owed_since}, " \
+          "retrying every #{CATCH_UP_RETRY_DELAY}s"
+        )
+        @catch_up_thread = Thread.new { catch_up_retry_loop }
+        @catch_up_thread.abort_on_exception = false
+      end
+    end
+
+    # Ask again, on a slower cadence than the broker retry on purpose: a
+    # catch-up is a paged server-to-server call whose window only grows while
+    # it is owed, and hammering an idp that is still coming back up is how a
+    # recovering identity provider gets held down by its own clients.
+    def catch_up_retry_loop
+      while running_flag?
+        sleep CATCH_UP_RETRY_DELAY
+
+        since = synchronize { @catch_up_owed_since }
+        # A reconnect's own replay may have paid it in the meantime.
+        break if since.nil?
+        break unless running_flag?
+
+        next unless catch_up!(since)
+
+        synchronize { @catch_up_owed_since = nil }
+        @config.logger.info("[IdpRails] revocation catch-up recovered the window owed since #{since}")
+        break
+      end
+    end
+
+    def await_catch_up_thread
+      thread = synchronize { @catch_up_thread }
+      thread&.kill
+      thread&.join(JOIN_TIMEOUT)
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      @config.logger.debug("[IdpRails] Revocation catch-up thread ended with: #{e.class}: #{e.message}")
+    end
+
+    # idp publishes the number a blocklist entry has to outlive. Adopt it when
+    # it is longer than what this app configured, and never when it is shorter.
+    #
+    # The two numbers live in different systems and used to match only by
+    # coincidence — idp's JWT_ACCESS_TOKEN_TTL and this gem's blocklist_ttl,
+    # both 900 by default, with nothing anywhere to notice when one moved.
+    # Raise idp's to 1800 and every consumer silently resurrected revoked
+    # tokens for the last 15 minutes of their lives.
+    #
+    # Widen only: a longer retention configured here is someone's deliberate
+    # choice and a smaller published value must not undo it. Discovery being
+    # unreachable leaves the configured value exactly as it was — this refines
+    # a boot, it does not become a new dependency of one.
+    def adopt_published_retention!
+      published = @config.discovered_access_token_ttl
+      return if published.nil? || published <= @config.blocklist_ttl
+
+      @config.logger.info(
+        "[IdpRails] Widening blocklist retention #{@config.blocklist_ttl}s -> #{published}s: " \
+        "idp mints access tokens valid that long, and a revoked one must not outlive its blocklist entry"
+      )
+      @config.blocklist_ttl = published
+    end
+
+    # The catch-up is optional, and it is also the ONLY recovery from an
+    # outage that took every consumer process down at once — the shared
+    # blocklist is written exclusively by a process that received an event, so
+    # when none did, it holds nothing to rehydrate from. An app that
+    # configured a transport and no catch-up has covered the common failure
+    # and left the total one open, which is worth one line at boot.
+    def warn_missing_catch_up
+      return if @catch_up
+
+      @config.logger.warn(
+        "[IdpRails] No revocation_catch_up configured — revocations published while every " \
+        "process of this app was down cannot be recovered, and will be honoured until they expire"
+      )
     end
 
     # Do any of a subject's live revocations cover this token?

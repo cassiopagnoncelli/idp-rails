@@ -177,4 +177,54 @@ RSpec.describe IdpRails::Discovery do
       expect { IdpRails.configuration.validate! }.to raise_error(IdpRails::Error, /jwks_url/)
     end
   end
+
+  # The number a revocation blocklist has to outlive, which belongs to idp and
+  # which a consumer had no way to learn had moved. Optional, because an idp
+  # too old to publish it must leave the configured retention exactly as it is.
+  describe '#discovered_access_token_ttl' do
+    def resolved(published)
+      body = published.nil? ? document : document.merge(access_token_ttl: published)
+      stub_discovery(body: body)
+      IdpRails.reset_configuration!
+      IdpRails.configuration.discovery_url = base_url
+      IdpRails.configuration.discovered_access_token_ttl
+    end
+
+    it 'reads the TTL idp publishes' do
+      expect(resolved(1_800)).to eq(1_800)
+    end
+
+    it 'reads it from a string, since JSON is not always typed the way we hope' do
+      expect(resolved('1800')).to eq(1_800)
+    end
+
+    it 'is nil when idp does not publish it' do
+      expect(resolved(nil)).to be_nil
+    end
+
+    # Zero or negative would widen nothing and, taken literally, describes a
+    # blocklist entry that expires before it is written.
+    it 'refuses a value that could not be a lifetime' do
+      expect(resolved(0)).to be_nil
+      expect(resolved(-1)).to be_nil
+    end
+
+    it 'refuses a value that is not a number at all' do
+      expect(resolved('fifteen minutes')).to be_nil
+    end
+
+    it 'is nil when no discovery is configured, rather than reaching for one' do
+      IdpRails.reset_configuration!
+
+      expect(IdpRails.configuration.discovered_access_token_ttl).to be_nil
+    end
+
+    it 'is nil when the document cannot be fetched' do
+      stub_discovery(status: 503)
+      IdpRails.reset_configuration!
+      IdpRails.configuration.discovery_url = base_url
+
+      expect(IdpRails.configuration.discovered_access_token_ttl).to be_nil
+    end
+  end
 end

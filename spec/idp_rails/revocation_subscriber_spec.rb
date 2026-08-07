@@ -314,10 +314,11 @@ RSpec.describe IdpRails::RevocationSubscriber do
       # constant the failed require had never defined. What a consumer's users
       # actually saw was "uninitialized constant
       # IdpRails::RevocationSubscriber::Bunny (NameError)", which says nothing
-      # about the gem that is missing. The clause has to come first, and this
-      # example fails if it is ever moved back.
+      # about the gem that is missing. There is no per-transport rescue clause
+      # left to order wrongly, and this example is what says so.
       it 'warns rather than raising, and names the gem' do
         loop_without_bunny = described_class.new
+        loop_without_bunny.instance_variable_set(:@running, true)
         allow(loop_without_bunny).to receive(:require).with('bunny').and_raise(LoadError)
         hide_const('Bunny')
 
@@ -329,12 +330,31 @@ RSpec.describe IdpRails::RevocationSubscriber do
     context 'over Redis pub/sub' do
       it 'warns rather than raising' do
         loop_without_redis = described_class.new
+        loop_without_redis.instance_variable_set(:@running, true)
         allow(loop_without_redis).to receive(:require).with('redis').and_raise(LoadError)
         hide_const('Redis')
 
         expect { loop_without_redis.send(:subscribe_loop) }.not_to raise_error
         expect(logger).to have_received(:warn).with(/redis gem unavailable/)
       end
+    end
+
+    # The one permanent failure, and therefore the one the supervision loop
+    # must NOT retry: no amount of waiting installs a gem, and a loop around
+    # it would be a log line a minute for the life of the process.
+    it 'gives up rather than retrying, since waiting installs nothing' do
+      IdpRails.configuration.rabbitmq_url = 'amqp://localhost'
+      giving_up = described_class.new
+      giving_up.instance_variable_set(:@running, true)
+      allow(giving_up).to receive(:require).with('bunny').and_raise(LoadError)
+      allow(giving_up).to receive(:sleep)
+      hide_const('Bunny')
+
+      giving_up.send(:subscribe_loop)
+
+      expect(giving_up).not_to have_received(:sleep)
+    ensure
+      IdpRails.configuration.rabbitmq_url = nil
     end
   end
 
@@ -487,7 +507,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
     subject(:subscriber) { described_class.new(catch_up: catch_up) }
 
     it 'blocks a revocation no process was up to receive' do
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
     end
@@ -495,13 +515,13 @@ RSpec.describe IdpRails::RevocationSubscriber do
     # The replayed cutoff has to mean what the live one means, or a user who
     # signed straight back in is refused the passport they just collected.
     it 'honours the cutoff it was given rather than the moment it asked' do
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_missed', issued_at: revoked_at + 1, sid: 'sess_1')).to be false
     end
 
     it 'leaves the subject other sessions alone' do
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_2')).to be false
     end
@@ -509,7 +529,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
     it 'asks for the window the blocklist retains' do
       IdpRails.configuration.blocklist_ttl = 900
 
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, subscriber.send(:catch_up_window_start))
 
       expect(asked.first).to be_within(2).of(Time.now.to_i - 900)
     end
@@ -517,7 +537,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
     it 'reads symbol keys, since the callable belongs to the app' do
       entries.replace([ { sub: 'usr_sym', sid: 'sess_9', revoked_at: revoked_at.utc.iso8601 } ])
 
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_sym', issued_at: revoked_at - 1, sid: 'sess_9')).to be true
     end
@@ -525,7 +545,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
     it 'treats a null sid as subject-wide' do
       entries.replace([ { 'sub' => 'usr_wide', 'sid' => nil, 'revoked_at' => revoked_at.utc.iso8601 } ])
 
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_wide', issued_at: revoked_at - 1, sid: 'sess_any')).to be true
     end
@@ -536,7 +556,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
                         { 'sub' => 'usr_good', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 }
                       ])
 
-      subscriber.send(:catch_up!)
+      subscriber.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(subscriber.revoked?('usr_good', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
     end
@@ -546,17 +566,17 @@ RSpec.describe IdpRails::RevocationSubscriber do
     it 'starts anyway when idp cannot be reached' do
       failing = described_class.new(catch_up: ->(_since) { raise 'connection refused' })
 
-      expect { failing.send(:catch_up!) }.not_to raise_error
+      expect { failing.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl) }.not_to raise_error
     end
 
     it 'is skipped, not guessed at, when no callable is wired' do
-      expect { described_class.new.send(:catch_up!) }.not_to raise_error
+      expect { described_class.new.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl) }.not_to raise_error
     end
 
     it 'can be wired through configuration instead of the constructor' do
       IdpRails.configuration.revocation_catch_up = catch_up
 
-      described_class.new.send(:catch_up!)
+      described_class.new.send(:catch_up_from!, Time.now.to_i - IdpRails.configuration.blocklist_ttl)
 
       expect(asked.size).to eq(1)
     end
@@ -612,7 +632,7 @@ RSpec.describe IdpRails::RevocationSubscriber do
       allow(fresh).to receive(:recover_missed!)
       allow(queue).to receive(:subscribe)
 
-      fresh.send(:subscribe_loop_rabbitmq)
+      fresh.send(:subscribe_rabbitmq)
 
       expect(fresh).not_to have_received(:recover_missed!)
     end
@@ -628,10 +648,10 @@ RSpec.describe IdpRails::RevocationSubscriber do
         attempts += 1
         raise Bunny::NetworkFailure.new('connection reset', StandardError.new) if attempts == 1
 
-        nil
+        reconnecting.instance_variable_set(:@running, false)
       end
 
-      reconnecting.send(:subscribe_loop_rabbitmq)
+      reconnecting.send(:subscribe_loop)
 
       expect(attempts).to eq(2)
       expect(reconnecting).to have_received(:recover_missed!).once
@@ -654,10 +674,10 @@ RSpec.describe IdpRails::RevocationSubscriber do
         attempts += 1
         raise Bunny::NetworkFailure.new('connection reset', StandardError.new) if attempts == 1
 
-        nil
+        reconnecting.instance_variable_set(:@running, false)
       end
 
-      reconnecting.send(:subscribe_loop_rabbitmq)
+      reconnecting.send(:subscribe_loop)
 
       expect(order).to eq(%i[bind subscribe bind replay subscribe])
     end
@@ -688,6 +708,269 @@ RSpec.describe IdpRails::RevocationSubscriber do
 
         expect(recovered.send(:reconnecting?)).to be false
       end
+    end
+  end
+
+  # The subscriber used to retry only connection-class errors. Everything else
+  # hit a bare `rescue StandardError`, logged once, and the thread exited — for
+  # good. The app carried on serving requests against a blocklist frozen at
+  # that instant, `running?` was consulted by nobody, and nothing anywhere said
+  # a word. Failing open is the right policy for revocation; failing open
+  # silently, permanently, is not.
+  describe 'surviving a transport failure' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+    let(:connection) { instance_double(Redis, subscribe: nil) }
+
+    before { IdpRails.configuration.logger = logger }
+
+    def loop_over(errors)
+      surviving = described_class.new
+      surviving.instance_variable_set(:@running, true)
+      allow(surviving).to receive(:sleep)
+      allow(surviving).to receive(:build_redis).and_return(connection)
+
+      attempts = 0
+      allow(connection).to receive(:subscribe) do
+        error = errors[attempts]
+        attempts += 1
+        raise error if error
+
+        surviving.instance_variable_set(:@running, false)
+      end
+
+      surviving.send(:subscribe_loop)
+      [ surviving, attempts ]
+    end
+
+    # The exact shape that used to be fatal: not a connection error, so no
+    # clause retried it.
+    it 'retries an error the connection classes never named' do
+      _, attempts = loop_over([ ArgumentError.new('wrong number of arguments') ])
+
+      expect(attempts).to eq(2)
+    end
+
+    it 'retries a connection error, as it always did' do
+      _, attempts = loop_over([ Redis::CannotConnectError.new('connection refused') ])
+
+      expect(attempts).to eq(2)
+    end
+
+    it 'keeps retrying rather than giving up after one' do
+      _, attempts = loop_over([
+                                ArgumentError.new('one'),
+                                RuntimeError.new('two'),
+                                Redis::TimeoutError.new('three')
+                              ])
+
+      expect(attempts).to eq(4)
+    end
+
+    # However the subscription ended, this process is off the channel and owes
+    # the window it was away for. Only the connection classes used to say so.
+    it 'owes a replay after any failure, not just a connection one' do
+      surviving, = loop_over([ ArgumentError.new('wrong number of arguments') ])
+
+      expect(surviving.send(:reconnecting?)).to be true
+    end
+
+    it 'stops when the subscriber is stopped, rather than reconnecting forever' do
+      stopping = described_class.new
+      stopping.instance_variable_set(:@running, true)
+      allow(stopping).to receive(:sleep)
+      allow(stopping).to receive(:build_redis).and_return(connection)
+      allow(connection).to receive(:subscribe) do
+        stopping.instance_variable_set(:@running, false)
+        raise Redis::CannotConnectError, 'connection refused'
+      end
+
+      expect { Timeout.timeout(2) { stopping.send(:subscribe_loop) } }.not_to raise_error
+    end
+
+    # Flat 5s forever meant a permanent-looking failure — a wrong ACL, a vhost
+    # that does not exist — logging every five seconds for the life of the
+    # process, and a fleet that lost the broker together coming back in
+    # lockstep to knock it over again.
+    describe 'the backoff' do
+      it 'grows, and settles at the cap' do
+        delays = (0..12).map { |attempt| subscriber.send(:reconnect_delay, attempt) }
+
+        expect(delays.first).to be <= described_class::RECONNECT_BASE_DELAY
+        expect(delays.last).to be > described_class::RECONNECT_BASE_DELAY
+        expect(delays).to all(be <= described_class::RECONNECT_MAX_DELAY)
+      end
+
+      it 'never waits so little that the retry becomes a hot loop' do
+        delays = (0..12).map { |attempt| subscriber.send(:reconnect_delay, attempt) }
+
+        expect(delays).to all(be >= described_class::RECONNECT_BASE_DELAY / 2.0)
+      end
+
+      it 'jitters, so a fleet does not reconnect in lockstep' do
+        delays = Array.new(20) { subscriber.send(:reconnect_delay, 3) }
+
+        expect(delays.uniq.size).to be > 1
+      end
+    end
+  end
+
+  # An idp that cannot be reached used to cost the window permanently: one
+  # warning, and every revocation nobody was up to hear was honoured for the
+  # rest of its life. It matters most in the case the catch-up exists for —
+  # the whole fleet down at once, coming back while idp is still on its way up.
+  describe 'a catch-up that could not reach idp' do
+    let(:revoked_at) { Time.now - 300 }
+    let(:entries) do
+      [ { 'sub' => 'usr_missed', 'sid' => 'sess_1', 'revoked_at' => revoked_at.utc.iso8601 } ]
+    end
+
+    it 'keeps the window owed rather than dropping it' do
+      owing = described_class.new(catch_up: ->(_since) { raise 'idp unreachable' })
+      owing.instance_variable_set(:@running, true)
+      allow(owing).to receive(:schedule_catch_up_retry)
+
+      owing.send(:catch_up_from!, 1_000)
+
+      expect(owing.instance_variable_get(:@catch_up_owed_since)).to eq(1_000)
+    end
+
+    it 'asks again until idp answers, and applies what it finally gets' do
+      attempts = 0
+      retrying = described_class.new(
+        catch_up: lambda { |_since|
+          attempts += 1
+          raise 'idp unreachable' if attempts < 3
+
+          entries
+        }
+      )
+      retrying.instance_variable_set(:@running, true)
+      allow(retrying).to receive(:sleep)
+      allow(retrying).to receive(:schedule_catch_up_retry)
+
+      retrying.send(:catch_up_from!, Time.now.to_i - 900)
+      retrying.send(:catch_up_retry_loop)
+
+      expect(attempts).to eq(3)
+      expect(retrying.revoked?('usr_missed', issued_at: revoked_at - 1, sid: 'sess_1')).to be true
+      expect(retrying.instance_variable_get(:@catch_up_owed_since)).to be_nil
+    end
+
+    # Recomputing the window on the retry would slide it forward by however
+    # long idp stayed down, and skip the oldest part of the very gap being
+    # retried. The same goes for a reconnect landing on top of an owed window:
+    # its own newer window must widen, never narrow.
+    it 'retries the window it owed, never a narrower one' do
+      asked = []
+      pinned = described_class.new(catch_up: ->(since) { asked << since; raise 'idp unreachable' })
+      pinned.instance_variable_set(:@running, true)
+      allow(pinned).to receive(:schedule_catch_up_retry)
+
+      pinned.send(:catch_up_from!, 1_000)
+      pinned.send(:catch_up_from!, 2_000)
+
+      expect(asked).to eq([ 1_000, 1_000 ])
+    end
+
+    it 'clears the debt once a replay lands, so the retry stops' do
+      landed = described_class.new(catch_up: ->(_since) { entries })
+      landed.instance_variable_set(:@running, true)
+
+      landed.send(:catch_up_from!, 1_000)
+
+      expect(landed.instance_variable_get(:@catch_up_owed_since)).to be_nil
+    end
+
+    # An app that wired no callable has opted out of replay, which is not the
+    # same as falling behind. Owing it forever would arm a retry thread that
+    # can never succeed.
+    it 'owes nothing when no callable is wired' do
+      opted_out = described_class.new
+      opted_out.instance_variable_set(:@running, true)
+
+      opted_out.send(:catch_up_from!, 1_000)
+
+      expect(opted_out.instance_variable_get(:@catch_up_owed_since)).to be_nil
+    end
+
+    # The trap the JS twin hit first: the boot replay runs before the transport
+    # is up, and an arming guard that reads `@running` would refuse to queue a
+    # retry on the one path the retry exists for.
+    it 'arms the retry from the boot replay, not only from a reconnect' do
+      booting = described_class.new(catch_up: ->(_since) { raise 'idp unreachable' })
+      allow(Thread).to receive(:new).and_return(instance_double(Thread, :abort_on_exception= => nil))
+      allow(booting).to receive(:schedule_catch_up_retry)
+
+      booting.start
+
+      expect(booting).to have_received(:schedule_catch_up_retry)
+    end
+  end
+
+  # Two numbers in two systems that used to match only by coincidence: idp's
+  # JWT_ACCESS_TOKEN_TTL and this gem's blocklist_ttl, both 900 by default.
+  # Raise idp's and every consumer silently resurrected revoked tokens for the
+  # difference, still inside their own validity.
+  describe 'adopting the retention idp publishes' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+
+    before do
+      IdpRails.configuration.logger = logger
+      IdpRails.configuration.blocklist_ttl = 900
+    end
+
+    after { IdpRails.configuration.blocklist_ttl = IdpRails::RevocationSubscriber::BLOCKLIST_TTL }
+
+    def widened_to(published)
+      allow(IdpRails.configuration).to receive(:discovered_access_token_ttl).and_return(published)
+      described_class.new.send(:adopt_published_retention!)
+      IdpRails.configuration.blocklist_ttl
+    end
+
+    it 'widens to a longer published TTL, so no revoked token outlives its entry' do
+      expect(widened_to(1_800)).to eq(1_800)
+    end
+
+    it 'says so, since a retention that moves on its own should not be invisible' do
+      widened_to(1_800)
+
+      expect(logger).to have_received(:info).with(/Widening blocklist retention 900s -> 1800s/)
+    end
+
+    # A longer retention configured here is someone's deliberate choice, and a
+    # smaller published value must not undo it.
+    it 'leaves a longer configured retention alone' do
+      IdpRails.configuration.blocklist_ttl = 3_600
+
+      expect(widened_to(1_800)).to eq(3_600)
+    end
+
+    # A refinement, not a new boot dependency: an idp too old to publish it, or
+    # a discovery that cannot be read, leaves the configured value as it was.
+    it 'leaves the configured value alone when idp publishes nothing' do
+      expect(widened_to(nil)).to eq(900)
+    end
+  end
+
+  # The catch-up is optional, and it is also the ONLY recovery from an outage
+  # that took every process of an app down at once — the shared blocklist is
+  # written exclusively by a process that received an event, so when none did,
+  # it holds nothing to rehydrate from.
+  describe 'an app with a transport and no catch-up' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+
+    before { IdpRails.configuration.logger = logger }
+
+    it 'is told what it is not covered for' do
+      described_class.new.send(:warn_missing_catch_up)
+
+      expect(logger).to have_received(:warn).with(/No revocation_catch_up configured/)
+    end
+
+    it 'says nothing when one is wired' do
+      described_class.new(catch_up: ->(_since) { [] }).send(:warn_missing_catch_up)
+
+      expect(logger).not_to have_received(:warn)
     end
   end
 end
