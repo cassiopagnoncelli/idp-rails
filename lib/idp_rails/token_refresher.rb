@@ -7,7 +7,13 @@ module IdpRails
   # The HTTP exchange stays with the app's own API client; this class owns
   # what happens to the session afterwards — the part every consumer used to
   # hand-roll, and hand-roll wrong by treating a network blip like a dead
-  # grant (clearing the session and forcing a fresh OAuth grant per blip):
+  # grant (clearing the session and forcing a fresh OAuth grant per blip).
+  #
+  # That API client must authenticate as THE client the refresh token was
+  # issued to: idp refuses a token belonging to another client (RFC 6749 §6),
+  # answering exactly as it does for a token that does not exist, so a mismatch
+  # arrives here as :invalid_grant. Idp did not always check, so an app
+  # refreshing another client's tokens could appear to work; it no longer can.
   #
   #   Hash from the block      → :refreshed      — session updated in place
   #   :invalid_grant           → :invalid_grant  — grant is dead; tokens
