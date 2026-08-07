@@ -9,3 +9,6 @@
 /.bundle/
 /pkg/
 *.gem
+
+# Agent scratch space: local to this checkout, never shared.
+/agents
