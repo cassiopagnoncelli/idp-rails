@@ -973,4 +973,80 @@ RSpec.describe IdpRails::RevocationSubscriber do
       expect(logger).not_to have_received(:warn)
     end
   end
+
+  # Claiming @running before the replays is what lets a failed boot catch-up arm
+  # its own retry. It also opens a way to wedge the subscriber permanently: a
+  # raise between the flag and the thread leaves @running true with nothing
+  # running, every later start returns early on the flag, and running? reports
+  # false because there is no thread. Nothing anywhere recovers that.
+  describe 'a start that fails on its way up' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+
+    before { IdpRails.configuration.logger = logger }
+
+    it 'hands the running flag back, so start can be tried again' do
+      failing = described_class.new
+      allow(failing).to receive(:rehydrate!).and_raise('redis exploded')
+
+      expect { failing.start }.to raise_error('redis exploded')
+
+      expect(failing.instance_variable_get(:@running)).to be false
+    end
+
+    it 'actually starts on the retry, rather than returning a dead subscriber' do
+      flaky = described_class.new
+      calls = 0
+      allow(flaky).to receive(:rehydrate!) do
+        calls += 1
+        raise 'redis exploded' if calls == 1
+      end
+      allow(Thread).to receive(:new).and_return(instance_double(Thread, :abort_on_exception= => nil))
+
+      expect { flaky.start }.to raise_error('redis exploded')
+      flaky.start
+
+      expect(flaky.instance_variable_get(:@thread)).not_to be_nil
+    end
+  end
+
+  # A discovery that was unreachable at boot left retention at the configured
+  # value for the life of the process — silently short whenever idp's TTL is
+  # longer. A reconnect is the natural second chance, and the document is
+  # cached, so this costs nothing once it has succeeded.
+  describe 'retention on reconnect' do
+    let(:logger) { instance_double(Logger, info: nil, warn: nil, error: nil, debug: nil) }
+
+    before do
+      IdpRails.configuration.logger = logger
+      IdpRails.configuration.blocklist_ttl = 900
+    end
+
+    after { IdpRails.configuration.blocklist_ttl = IdpRails::RevocationSubscriber::BLOCKLIST_TTL }
+
+    it 'asks discovery again, so a boot-time outage is not permanent' do
+      recovering = described_class.new
+      allow(recovering).to receive(:rehydrate!)
+      allow(recovering).to receive(:catch_up_from!)
+      allow(IdpRails.configuration).to receive(:discovered_access_token_ttl).and_return(1_800)
+      recovering.send(:note_disconnect)
+
+      recovering.send(:recover_missed!)
+
+      expect(IdpRails.configuration.blocklist_ttl).to eq(1_800)
+    end
+
+    # Or the replay it triggers asks for the narrow window it just widened past.
+    it 'widens before computing the window the replay asks for' do
+      asked = nil
+      ordered = described_class.new
+      allow(ordered).to receive(:rehydrate!)
+      allow(ordered).to receive(:catch_up_from!) { |since| asked = since }
+      allow(IdpRails.configuration).to receive(:discovered_access_token_ttl).and_return(1_800)
+      ordered.send(:note_disconnect)
+
+      ordered.send(:recover_missed!)
+
+      expect(asked).to be_within(2).of(Time.now.to_i - 1_800)
+    end
+  end
 end

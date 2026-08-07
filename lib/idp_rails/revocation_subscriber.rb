@@ -173,13 +173,26 @@ module IdpRails
         @running = true
       end
 
-      adopt_published_retention!
-      rehydrate!
-      catch_up_from!(catch_up_window_start)
+      # Claiming @running before the replays is what lets a failed boot
+      # catch-up arm its own retry — and it also means anything that raises
+      # between here and the thread would leave a subscriber that is `@running`
+      # with nothing running: every later `start` returns early on the flag,
+      # and `running?` reports false because there is no thread, so nothing
+      # anywhere recovers it. Which is precisely the shape of failure this
+      # class spent a release removing. Hand the flag back on the way out.
+      started = false
+      begin
+        adopt_published_retention!
+        rehydrate!
+        catch_up_from!(catch_up_window_start)
 
-      synchronize do
-        @thread = Thread.new { subscribe_loop }
-        @thread.abort_on_exception = false
+        synchronize do
+          @thread = Thread.new { subscribe_loop }
+          @thread.abort_on_exception = false
+        end
+        started = true
+      ensure
+        synchronize { @running = false } unless started
       end
 
       warn_missing_catch_up
@@ -389,6 +402,13 @@ module IdpRails
     # fail the subscription it has just recovered.
     def recover_missed!
       @config.logger.info("[IdpRails] Reconnected — replaying revocations missed while away")
+      # Retried here, not only at boot. A discovery that was unreachable when
+      # this process started leaves retention at the configured value for the
+      # life of the process — silently short, if idp's TTL is longer — and a
+      # reconnect is the natural second chance. The document is cached, so this
+      # is free when it already succeeded. It runs BEFORE the window below is
+      # computed, so a widened retention widens the replay that uses it.
+      adopt_published_retention!
       rehydrate!
       catch_up_from!(catch_up_window_start)
       synchronize { @reconnecting = false }
